@@ -1,0 +1,118 @@
+name: Shudder Linux CI
+
+on:
+  push:
+    branches:
+      - linux-native-wayland
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Setup native Linux build
+        uses: ./.github/actions/setup-native-linux
+        with:
+          additional-system-packages: streamlink mpv weston dbus-x11 desktop-file-utils appstream rpm
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DSHUDDER_GITHUB_OWNER=fosschad \
+            -DSHUDDER_GITHUB_REPOSITORY=Shudder
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: QML lint
+        run: cmake --build build --target all_qmllint
+      - name: Wayland smoke test
+        run: |
+          runtime_dir="$(mktemp -d)"
+          chmod 700 "$runtime_dir"
+          XDG_RUNTIME_DIR="$runtime_dir" weston --backend=headless-backend.so --socket=wayland-shudder --idle-time=0 >"$runtime_dir/weston.log" 2>&1 &
+          weston_pid=$!
+
+          cleanup() {
+            kill "$weston_pid" 2>/dev/null || true
+            wait "$weston_pid" 2>/dev/null || true
+            cat "$runtime_dir/weston.log" || true
+            rm -rf "$runtime_dir"
+          }
+
+          trap cleanup EXIT
+          sleep 2
+
+          set +e
+          env \
+            DISPLAY= \
+            XDG_RUNTIME_DIR="$runtime_dir" \
+            WAYLAND_DISPLAY=wayland-shudder \
+            QT_QPA_PLATFORM=wayland \
+            timeout 15s ./build/src/shudder
+          exit_code=$?
+          set -e
+          if [ "$exit_code" -ne 124 ]; then
+            exit "$exit_code"
+          fi
+
+      - name: Package DEB and RPM
+        run: cmake --build build --target package
+
+      - name: Generate checksum manifest
+        run: |
+          mkdir -p artifacts
+          cp build/*.deb build/*.rpm build/*.tar.gz artifacts/ 2>/dev/null || true
+          cd artifacts
+          sha256sum * > SHA256SUMS
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: shudder-linux-native
+          if-no-files-found: error
+          path: artifacts/*
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Setup native Linux build
+        uses: ./.github/actions/setup-native-linux
+
+      - name: Configure ASan UBSan
+        run: |
+          cmake -S . -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DSHUDDER_ENABLE_SANITIZERS=ON \
+            -DSHUDDER_GITHUB_OWNER=fosschad \
+            -DSHUDDER_GITHUB_REPOSITORY=Shudder
+
+      - name: Build ASan UBSan
+        run: cmake --build build-asan --parallel
+
+      - name: Run ASan UBSan tests
+        env:
+          ASAN_OPTIONS: abort_on_error=1:detect_leaks=1:strict_init_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-asan --output-on-failure

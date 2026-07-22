@@ -1,0 +1,58 @@
+name: Setup native Linux build
+description: Install Shudder native Linux system dependencies and Qt 6.8.
+inputs:
+  additional-system-packages:
+    description: Extra apt packages required by the calling job.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Install system dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        packages=(
+          build-essential
+          cmake
+          ninja-build
+          pkg-config
+          libmpv-dev
+          libsecret-1-dev
+          libgl1-mesa-dev
+          libegl1-mesa-dev
+          libxkbcommon-dev
+          wayland-protocols
+        )
+        if [[ -n "${{ inputs.additional-system-packages }}" ]]; then
+          read -r -a extra_packages <<< "${{ inputs.additional-system-packages }}"
+          packages+=("${extra_packages[@]}")
+        fi
+        sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+    # jurplel/install-qt-action v4 branch at 48d3ad6db93f3627c8ee7a0454bc6f3744f7e730.
+    - name: Install Qt 6.8
+      uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730
+      with:
+        version: '6.8.3'
+        host: linux
+        target: desktop
+        arch: linux_gcc_64
+        modules: 'qtwebengine qtwebsockets qtwebchannel qtpositioning'
+        cache: true
+
+    - name: Verify Qt installation
+      shell: bash
+      run: |
+        echo "QT_ROOT_DIR=$QT_ROOT_DIR"
+        echo "PATH=$PATH"
+        command -v qmake6 || command -v qmake
+        qmake6 --version 2>/dev/null || qmake --version
+        command -v qmllint
+        cmake --version
+
+    - name: Verify Qt CMake package
+      shell: bash
+      run: |
+        test -f "$QT_ROOT_DIR/lib/cmake/Qt6/Qt6Config.cmake"
+        grep -R "set(Qt6_VERSION" "$QT_ROOT_DIR/lib/cmake/Qt6" | head -5 || true

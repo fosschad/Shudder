@@ -1,0 +1,90 @@
+name: Release Shudder
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Setup native Linux build
+        uses: ./.github/actions/setup-native-linux
+        with:
+          additional-system-packages: streamlink mpv desktop-file-utils appstream rpm
+
+      - name: Validate tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          grep -q "project(Shudder" CMakeLists.txt
+          grep -q "VERSION $version" CMakeLists.txt
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DSHUDDER_GITHUB_OWNER=fosschad \
+            -DSHUDDER_GITHUB_REPOSITORY=Shudder
+
+      - name: Build and test
+        run: |
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      - name: QML lint
+        run: cmake --build build --target all_qmllint
+      - name: Package
+        run: cmake --build build --target package
+
+      - name: Prepare release payload
+        run: |
+          mkdir -p release
+          cp build/*.deb build/*.rpm build/*.tar.gz release/ 2>/dev/null || true
+          cp CHANGELOG.md release/release-notes.md
+          (cd release && sha256sum * > SHA256SUMS)
+
+      - name: Upload release payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: shudder-linux-release
+          if-no-files-found: error
+          retention-days: 2
+          path: release/*
+
+  publish:
+    needs: build-linux
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download release payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: shudder-linux-release
+          path: release
+
+      - name: Publish immutable Shudder release
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; release assets are immutable."
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --latest \
+            --notes-file release/release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

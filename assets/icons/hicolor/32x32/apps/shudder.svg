@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>Shudder icon</title>
+  <desc>Minimal monochrome icon inspired by the literal meaning of shudder: a soft trembling wave enclosed in a rounded square.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="96" y1="80" x2="416" y2="432" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#17181B"/>
+      <stop offset="1" stop-color="#09090B"/>
+    </linearGradient>
+    <linearGradient id="fg" x1="160" y1="150" x2="352" y2="362" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D9DADF"/>
+    </linearGradient>
+    <filter id="shadow" x="68" y="68" width="376" height="376" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="12" stdDeviation="20" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect x="80" y="80" width="352" height="352" rx="88" fill="url(#bg)"/>
+  <rect x="80.5" y="80.5" width="351" height="351" rx="87.5" stroke="#FFFFFF" stroke-opacity="0.08"/>
+
+  <g filter="url(#shadow)">
+    <!-- Trembling wave core -->
+    <path d="M164 256C184 256 188 216 208 216C228 216 232 296 252 296C272 296 276 196 296 196C316 196 320 256 340 256"
+          stroke="url(#fg)" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Soft echo strokes suggesting a shudder/tremble -->
+    <path d="M164 224C184 224 188 192 208 192"
+          stroke="url(#fg)" stroke-opacity="0.58" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M296 320C316 320 320 288 340 288"
+          stroke="url(#fg)" stroke-opacity="0.58" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

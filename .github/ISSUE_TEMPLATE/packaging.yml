@@ -1,0 +1,27 @@
+name: Packaging Problem
+description: Report AppImage, Flatpak, DEB, or RPM issues
+title: "[Packaging]: "
+labels: [packaging]
+body:
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package format
+      options:
+        - AppImage
+        - Flatpak
+        - DEB
+        - RPM
+        - Source build
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: Issue
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Distribution and desktop environment

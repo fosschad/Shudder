@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>@SHUDDER_APP_ID@</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Shudder</name>
+  <summary>Native Linux Twitch desktop client</summary>
+  <description>
+    <p>Shudder is an independent open-source Twitch desktop client for Linux, built with Qt Quick, Qt WebEngine for Twitch-controlled playback surfaces, Streamlink, libmpv, and native Twitch chat.</p>
+    <p>Shudder is not affiliated with Twitch.</p>
+  </description>
+  <launchable type="desktop-id">@SHUDDER_APP_ID@.desktop</launchable>
+  <provides>
+    <binary>shudder</binary>
+  </provides>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Network</category>
+  </categories>
+  <url type="homepage">https://github.com/@SHUDDER_GITHUB_OWNER@/@SHUDDER_GITHUB_REPOSITORY@</url>
+  <url type="bugtracker">https://github.com/@SHUDDER_GITHUB_OWNER@/@SHUDDER_GITHUB_REPOSITORY@/issues</url>
+  <url type="vcs-browser">https://github.com/@SHUDDER_GITHUB_OWNER@/@SHUDDER_GITHUB_REPOSITORY@</url>
+  <developer id="io.github.@SHUDDER_GITHUB_OWNER_APP_ID_SEGMENT@">
+    <name>@SHUDDER_GITHUB_OWNER@</name>
+  </developer>
+  <releases>
+    <release version="@PROJECT_VERSION@" date="2026-07-22">
+      <description>
+        <p>Initial Shudder release with Device Code sign-in, Secret Service credential storage, followed channels, category browsing, separated search, Streamlink/libmpv native playback, WebEngine fallback playback, native Twitch chat, replies, mentions, Twitch/7TV/FrankerFaceZ/BetterTTV emotes, stream statistics, and Linux packages.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">moderate</content_attribute>
+  </content_rating>
+</component>

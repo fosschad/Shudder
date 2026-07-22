@@ -1,0 +1,24 @@
+app-id: @SHUDDER_APP_ID@
+runtime: org.kde.Platform
+runtime-version: '6.8'
+sdk: org.kde.Sdk
+command: shudder
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=network
+  - --socket=pulseaudio
+  - --device=dri
+  - --talk-name=org.freedesktop.secrets
+  - --filesystem=xdg-download
+modules:
+  - name: shudder
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - -DSHUDDER_GITHUB_OWNER=@SHUDDER_GITHUB_OWNER@
+      - -DSHUDDER_GITHUB_REPOSITORY=@SHUDDER_GITHUB_REPOSITORY@
+      - -DSHUDDER_TWITCH_CLIENT_ID=@SHUDDER_TWITCH_CLIENT_ID@
+    sources:
+      - type: dir
+        path: ../..

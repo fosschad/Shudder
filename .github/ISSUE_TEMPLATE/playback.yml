@@ -1,0 +1,28 @@
+name: Playback Problem
+description: Report Standard or Native playback failures
+title: "[Playback]: "
+labels: [playback]
+body:
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Playback mode
+      options:
+        - Standard Twitch WebEngine
+        - Native Streamlink/libmpv
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: Issue
+    validations:
+      required: true
+  - type: input
+    id: streamlink
+    attributes:
+      label: Streamlink version
+  - type: input
+    id: mpv
+    attributes:
+      label: mpv/libmpv version

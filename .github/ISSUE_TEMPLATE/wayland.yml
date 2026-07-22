@@ -1,0 +1,28 @@
+name: Wayland Compatibility Issue
+description: Report compositor, scaling, fullscreen, or GPU issues
+title: "[Wayland]: "
+labels: [wayland]
+body:
+  - type: input
+    id: compositor
+    attributes:
+      label: Compositor and version
+      placeholder: GNOME, KDE Plasma, Sway, Hyprland, etc.
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: Issue
+    validations:
+      required: true
+  - type: textarea
+    id: qpa
+    attributes:
+      label: Output with QT_LOGGING_RULES="qt.qpa.*=true"

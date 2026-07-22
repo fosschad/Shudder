@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Shudder
+Comment=Native Twitch desktop client
+Exec=shudder
+Icon=@SHUDDER_APP_ID@
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;
+StartupNotify=true
+StartupWMClass=@SHUDDER_APP_ID@
+X-GNOME-UsesNotifications=true
