@@ -133,7 +133,10 @@ Frame {
                 readonly property bool followTail: followState !== readingHistory
                 property bool pendingTailJump: false
                 property int pendingMessageCount: 0
-                property int correctionPassesRemaining: 0
+                property int stableTailPasses: 0
+                property real observedTailContentHeight: NaN
+                property real observedTailOriginY: NaN
+                property real observedTailViewportHeight: NaN
 
                 anchors.fill: parent
                 model: chatModel
@@ -157,15 +160,21 @@ Frame {
 
                 function cancelTailMaintenance() {
                     pendingTailJump = false
-                    correctionPassesRemaining = 0
+                    stableTailPasses = 0
+                    observedTailContentHeight = NaN
+                    observedTailOriginY = NaN
+                    observedTailViewportHeight = NaN
                     tailJumpTimer.stop()
                 }
 
-                function requestTailMaintenance(passes) {
+                function requestTailMaintenance() {
                     if (followState === readingHistory) return
                     if (followState !== modelReset) followState = programmaticScroll
                     pendingTailJump = true
-                    correctionPassesRemaining = Math.max(correctionPassesRemaining, passes === undefined ? 2 : passes)
+                    stableTailPasses = 0
+                    observedTailContentHeight = NaN
+                    observedTailOriginY = NaN
+                    observedTailViewportHeight = NaN
                     if (width <= 0 || height <= 0 || !visible) return
                     if (tailJumpTimer.running) return
                     tailJumpTimer.restart()
@@ -174,7 +183,7 @@ Frame {
                 function jumpToPresent() {
                     followState = programmaticScroll
                     pendingMessageCount = 0
-                    requestTailMaintenance(2)
+                    requestTailMaintenance()
                 }
 
                 function beginUserScroll() {
@@ -187,7 +196,7 @@ Frame {
                     if (followState !== readingHistory || !nearEnd()) return
                     followState = programmaticScroll
                     pendingMessageCount = 0
-                    requestTailMaintenance(2)
+                    requestTailMaintenance()
                 }
 
                 function handleUserWheel() {
@@ -204,7 +213,7 @@ Frame {
                     if (count <= 0) {
                         pendingTailJump = false
                         pendingMessageCount = 0
-                        correctionPassesRemaining = 0
+                        stableTailPasses = 0
                         followState = followingLive
                         return
                     }
@@ -214,8 +223,20 @@ Frame {
                     forceLayout()
                     positionViewAtEnd()
                     pendingMessageCount = 0
-                    correctionPassesRemaining -= 1
-                    if (correctionPassesRemaining > 0) {
+
+                    const geometryStable = finite(observedTailContentHeight)
+                        && Math.abs(contentHeight - observedTailContentHeight) <= 0.01
+                        && Math.abs(originY - observedTailOriginY) <= 0.01
+                        && Math.abs(height - observedTailViewportHeight) <= 0.01
+                    const positionedAtTail = finite(contentY) && Math.abs(contentY - bottomY()) <= 1
+                    stableTailPasses = geometryStable && positionedAtTail && !moving && !flicking
+                        ? stableTailPasses + 1
+                        : 0
+                    observedTailContentHeight = contentHeight
+                    observedTailOriginY = originY
+                    observedTailViewportHeight = height
+
+                    if (stableTailPasses < 2) {
                         tailJumpTimer.restart()
                         return
                     }
@@ -462,18 +483,21 @@ Frame {
                     }
                 }
 
-                Component.onCompleted: requestTailMaintenance(2)
+                Component.onCompleted: requestTailMaintenance()
                 Component.onDestruction: cancelTailMaintenance()
                 onMovementStarted: {
                     if (followState !== programmaticScroll && followState !== modelReset) beginUserScroll()
                 }
                 onDraggingChanged: if (dragging) beginUserScroll()
-                onMovementEnded: settleUserScroll()
-                onContentHeightChanged: requestTailMaintenance(2)
-                onOriginYChanged: requestTailMaintenance(2)
-                onWidthChanged: requestTailMaintenance(2)
-                onHeightChanged: requestTailMaintenance(2)
-                onVisibleChanged: if (visible) requestTailMaintenance(2)
+                onMovementEnded: {
+                    if (followState === readingHistory) settleUserScroll()
+                    else if (followState === programmaticScroll) requestTailMaintenance()
+                }
+                onContentHeightChanged: requestTailMaintenance()
+                onOriginYChanged: requestTailMaintenance()
+                onWidthChanged: requestTailMaintenance()
+                onHeightChanged: requestTailMaintenance()
+                onVisibleChanged: if (visible) requestTailMaintenance()
                 Connections {
                     target: chatModel
                     function onModelAboutToBeReset() {
@@ -483,19 +507,19 @@ Frame {
                     }
                     function onModelReset() {
                         list.followState = list.programmaticScroll
-                        list.requestTailMaintenance(2)
+                        list.requestTailMaintenance()
                     }
                     function onRowsInserted(parent, first, last) {
                         if (list.followState === list.readingHistory) list.pendingMessageCount += last - first + 1
-                        else list.requestTailMaintenance(2)
+                        else list.requestTailMaintenance()
                     }
                     function onRowsRemoved() {
-                        if (list.followState !== list.readingHistory) list.requestTailMaintenance(2)
+                        if (list.followState !== list.readingHistory) list.requestTailMaintenance()
                     }
                     function onChannelChanged() {
                         list.followState = list.programmaticScroll
                         list.pendingMessageCount = 0
-                        list.requestTailMaintenance(2)
+                        list.requestTailMaintenance()
                     }
                 }
             }

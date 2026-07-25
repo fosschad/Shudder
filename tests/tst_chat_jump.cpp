@@ -1,4 +1,5 @@
 #include <QAbstractListModel>
+#include <QDeadlineTimer>
 #include <QGuiApplication>
 #include <QQmlContext>
 #include <QQmlEngine>
@@ -303,6 +304,22 @@ private slots:
   void unresolvedBadgesDoNotRenderPlaceholders();
 
 private:
+  struct TailObservation {
+    int count = 0;
+    qreal contentY = 0;
+    qreal originY = 0;
+    qreal contentHeight = 0;
+    qreal viewportHeight = 0;
+    qreal tailPosition = 0;
+    qreal distanceFromTail = 0;
+    bool atYEnd = false;
+    bool moving = false;
+    bool flicking = false;
+    bool followTail = false;
+    bool pendingTailJump = false;
+    int followState = -1;
+  };
+
   struct Harness {
     SyntheticChatModel model;
     FakePreferences preferences;
@@ -383,18 +400,61 @@ private:
     return matches;
   }
 
-  static bool jumpSettled(QQuickItem *list)
+  static qreal tailTolerance(const QQuickItem *list)
   {
-    drainEvents();
-    if (list->property("pendingTailJump").toBool()) drainEvents(40);
-    return !list->property("pendingTailJump").toBool();
+    const qreal devicePixelRatio = list->window() ? list->window()->effectiveDevicePixelRatio() : 1.0;
+    return 2.0 / qMax<qreal>(1.0, devicePixelRatio);
+  }
+
+  static TailObservation observeTail(QQuickItem *list)
+  {
+    TailObservation observation;
+    observation.count = list->property("count").toInt();
+    observation.contentY = list->property("contentY").toReal();
+    observation.originY = list->property("originY").toReal();
+    observation.contentHeight = list->property("contentHeight").toReal();
+    observation.viewportHeight = list->height();
+    observation.tailPosition = qMax(observation.originY, observation.originY + observation.contentHeight - observation.viewportHeight);
+    observation.distanceFromTail = qAbs(observation.contentY - observation.tailPosition);
+    observation.atYEnd = list->property("atYEnd").toBool();
+    observation.moving = list->property("moving").toBool();
+    observation.flicking = list->property("flicking").toBool();
+    observation.followTail = list->property("followTail").toBool();
+    observation.pendingTailJump = list->property("pendingTailJump").toBool();
+    observation.followState = list->property("followState").toInt();
+    return observation;
+  }
+
+  static bool waitForLiveTail(QQuickItem *list, int expectedCount, TailObservation *finalObservation = nullptr, int timeoutMs = 3000)
+  {
+    QDeadlineTimer deadline(timeoutMs);
+    TailObservation previous;
+    bool havePrevious = false;
+    int stableObservations = 0;
+
+    do {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, qMax(1, int(qMin<qint64>(10, deadline.remainingTime()))));
+      const TailObservation current = observeTail(list);
+      const bool geometryStable = havePrevious && qAbs(current.contentHeight - previous.contentHeight) <= 0.01 &&
+          qAbs(current.originY - previous.originY) <= 0.01 && qAbs(current.viewportHeight - previous.viewportHeight) <= 0.01;
+      const bool liveTailSettled = current.count == expectedCount && current.followTail && !current.pendingTailJump &&
+          !current.moving && !current.flicking && current.distanceFromTail <= tailTolerance(list);
+      stableObservations = geometryStable && liveTailSettled ? stableObservations + 1 : 0;
+      previous = current;
+      havePrevious = true;
+      if (stableObservations >= 2) {
+        if (finalObservation) *finalObservation = current;
+        return true;
+      }
+    } while (!deadline.hasExpired());
+
+    if (finalObservation) *finalObservation = previous;
+    return false;
   }
 
   static bool atTail(QQuickItem *list)
   {
-    const qreal origin = list->property("originY").toReal();
-    const qreal bottom = qMax(origin, origin + list->property("contentHeight").toReal() - list->height());
-    return qAbs(list->property("contentY").toReal() - bottom) <= 2.0;
+    return observeTail(list).distanceFromTail <= tailTolerance(list);
   }
 
   static QQuickItem *jumpButton(const Harness &harness)
@@ -413,13 +473,12 @@ void ChatJumpTests::jumpEnablesPersistentLiveFollowing()
 
   harness->model.appendMessages(80);
   QTRY_VERIFY_WITH_TIMEOUT(list->property("count").toInt() == harness->model.rowCount(), 1000);
-  QVERIFY(jumpSettled(list));
+  QVERIFY(waitForLiveTail(list, harness->model.rowCount()));
   scrollAwayFromTail(list, 0.25);
   QVERIFY(!list->property("followTail").toBool());
   QVERIFY(jumpButton(*harness)->isVisible());
   jump(list);
-  QVERIFY(jumpSettled(list));
-  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+  QVERIFY(waitForLiveTail(list, harness->model.rowCount()));
   QVERIFY(list->property("followTail").toBool());
   QVERIFY(!jumpButton(*harness)->isVisible());
 
@@ -436,8 +495,7 @@ void ChatJumpTests::manualScrollPausesUntilReturningToBottom()
   QQuickItem *list = chatList(*harness);
   harness->model.appendMessages(100);
   jump(list);
-  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
-  QVERIFY(jumpSettled(list));
+  QVERIFY(waitForLiveTail(list, harness->model.rowCount()));
 
   scrollAwayFromTail(list, 0.2);
   const qreal pausedY = list->property("contentY").toReal();
@@ -461,8 +519,7 @@ void ChatJumpTests::wheelAtBottomKeepsFollowing()
   QQuickItem *list = chatList(*harness);
   harness->model.appendMessages(80);
   jump(list);
-  QVERIFY(jumpSettled(list));
-  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+  QVERIFY(waitForLiveTail(list, harness->model.rowCount()));
 
   QVERIFY(QMetaObject::invokeMethod(list, "handleUserWheel"));
   drainEvents(10);
@@ -556,8 +613,31 @@ void ChatJumpTests::jumpStress100Cycles()
     jump(list);
     jump(list);
     if (cycle % 7 == 0) jump(list);
-    QVERIFY(jumpSettled(list));
-    QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+    TailObservation observation;
+    if (!waitForLiveTail(list, harness->model.rowCount(), &observation)) {
+      const bool jumpVisible = jumpButton(*harness)->isVisible();
+      const QString diagnostics = QStringLiteral(
+          "cycle=%1 modelCount=%2 listCount=%3 contentY=%4 originY=%5 contentHeight=%6 viewportHeight=%7 "
+          "tailPosition=%8 distanceFromTail=%9 atYEnd=%10 moving=%11 flicking=%12 followState=%13 "
+          "followTail=%14 pendingTailJump=%15 jumpButtonVisible=%16")
+          .arg(cycle)
+          .arg(harness->model.rowCount())
+          .arg(observation.count)
+          .arg(observation.contentY, 0, 'f', 3)
+          .arg(observation.originY, 0, 'f', 3)
+          .arg(observation.contentHeight, 0, 'f', 3)
+          .arg(observation.viewportHeight, 0, 'f', 3)
+          .arg(observation.tailPosition, 0, 'f', 3)
+          .arg(observation.distanceFromTail, 0, 'f', 3)
+          .arg(observation.atYEnd)
+          .arg(observation.moving)
+          .arg(observation.flicking)
+          .arg(observation.followState)
+          .arg(observation.followTail)
+          .arg(observation.pendingTailJump)
+          .arg(jumpVisible);
+      QFAIL(qPrintable(diagnostics));
+    }
     verifyListState(*harness);
   }
 
@@ -575,7 +655,7 @@ void ChatJumpTests::unresolvedBadgesDoNotRenderPlaceholders()
 
   harness->model.appendBadgeMessage(QString());
   jump(list);
-  QVERIFY(jumpSettled(list));
+  QVERIFY(waitForLiveTail(list, harness->model.rowCount()));
 
   const QList<QQuickItem *> badgeCells = visualItemsByObjectName(harness->view.rootObject(), QStringLiteral("chatBadgeCell"));
   QVERIFY(!badgeCells.isEmpty());
