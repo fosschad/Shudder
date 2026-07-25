@@ -18,20 +18,29 @@ Item {
     property int maxRetries: 2
     property int retryCount: 0
     property url effectiveSource: source
+    property int sourceGeneration: 0
+    property int retryGeneration: -1
+    property string retrySource: ""
     readonly property bool animatedSource: effectiveSource.toString().toLowerCase().indexOf(".gif") !== -1
     readonly property bool ready: animatedSource
-                                   ? animatedImage.status === AnimatedImage.Ready && animatedImage.source.toString().length > 0
-                                   : image.status === Image.Ready && image.source.toString().length > 0
+                                    ? animatedImage.status === AnimatedImage.Ready && animatedImage.source.toString() === source.toString()
+                                    : image.status === Image.Ready && image.source.toString() === source.toString()
 
     onSourceChanged: {
         retryTimer.stop()
         retryCount = 0
+        sourceGeneration += 1
+        retryGeneration = -1
+        retrySource = ""
         effectiveSource = source
     }
 
-    function scheduleRetry() {
-        if (effectiveSource.toString().length === 0 || retryCount >= maxRetries) return
+    function scheduleRetry(failedSource, generation) {
+        if (generation !== sourceGeneration || failedSource !== source.toString()
+                || failedSource.length === 0 || retryCount >= maxRetries) return
         retryCount += 1
+        retryGeneration = generation
+        retrySource = failedSource
         retryTimer.restart()
     }
 
@@ -40,7 +49,9 @@ Item {
         interval: control.retryDelayMs
         repeat: false
         onTriggered: {
-            const nextSource = control.source
+            if (control.retryGeneration !== control.sourceGeneration
+                    || control.retrySource !== control.source.toString()) return
+            const nextSource = control.retrySource
             control.effectiveSource = ""
             control.effectiveSource = nextSource
         }
@@ -67,8 +78,10 @@ Item {
         retainWhileLoading: control.retainWhileLoading
         sourceSize.width: control.preferredSourceWidth > 0 ? control.preferredSourceWidth : 0
         sourceSize.height: control.preferredSourceHeight > 0 ? control.preferredSourceHeight : 0
-        visible: !control.animatedSource && source.toString().length > 0 && (status === Image.Ready || (control.retainWhileLoading && status === Image.Loading))
-        onStatusChanged: if (status === Image.Error) control.scheduleRetry()
+        visible: !control.animatedSource && source.toString() === control.source.toString()
+                 && source.toString().length > 0
+                 && (status === Image.Ready || (control.retainWhileLoading && status === Image.Loading))
+        onStatusChanged: if (status === Image.Error) control.scheduleRetry(source.toString(), control.sourceGeneration)
     }
 
     AnimatedImage {
@@ -81,7 +94,8 @@ Item {
         mipmap: true
         sourceSize.width: control.preferredSourceWidth > 0 ? control.preferredSourceWidth : 0
         sourceSize.height: control.preferredSourceHeight > 0 ? control.preferredSourceHeight : 0
-        visible: control.animatedSource && status === AnimatedImage.Ready
-        onStatusChanged: if (status === AnimatedImage.Error) control.scheduleRetry()
+        visible: control.animatedSource && source.toString() === control.source.toString()
+                 && status === AnimatedImage.Ready
+        onStatusChanged: if (status === AnimatedImage.Error) control.scheduleRetry(source.toString(), control.sourceGeneration)
     }
 }

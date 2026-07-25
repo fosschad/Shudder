@@ -30,7 +30,8 @@ QDateTime timestampFromTags(const QMap<QString, QString> &tags)
 
 std::optional<ChatEvent> IrcParser::parseLine(const QString &rawLine)
 {
-  QString line = rawLine.trimmed();
+  QString line = rawLine;
+  while (line.endsWith(QLatin1Char('\r')) || line.endsWith(QLatin1Char('\n'))) line.chop(1);
   if (line.isEmpty()) return std::nullopt;
 
   ChatEvent event;
@@ -176,10 +177,21 @@ QVector<ChatEmoteRange> IrcParser::parseEmotes(const QString &raw)
 
 QString IrcParser::unescapeTagValue(QString value)
 {
-  value.replace(QStringLiteral("\\s"), QStringLiteral(" "));
-  value.replace(QStringLiteral("\\:"), QStringLiteral(";"));
-  value.replace(QStringLiteral("\\r"), QStringLiteral("\r"));
-  value.replace(QStringLiteral("\\n"), QStringLiteral("\n"));
-  value.replace(QStringLiteral("\\\\"), QStringLiteral("\\"));
-  return value;
+  QString decoded;
+  decoded.reserve(value.size());
+  for (int i = 0; i < value.size(); ++i) {
+    if (value.at(i) != QLatin1Char('\\')) {
+      decoded += value.at(i);
+      continue;
+    }
+    if (i + 1 >= value.size()) continue;
+    const QChar escaped = value.at(++i);
+    if (escaped == QLatin1Char('s')) decoded += QLatin1Char(' ');
+    else if (escaped == QLatin1Char(':')) decoded += QLatin1Char(';');
+    else if (escaped == QLatin1Char('r')) decoded += QLatin1Char('\r');
+    else if (escaped == QLatin1Char('n')) decoded += QLatin1Char('\n');
+    else if (escaped == QLatin1Char('\\')) decoded += QLatin1Char('\\');
+    else decoded += escaped;
+  }
+  return decoded;
 }

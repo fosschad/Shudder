@@ -2,6 +2,7 @@
 
 #include "shudder_config.h"
 
+#include <QColor>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -55,7 +56,7 @@ QVariant ChatModel::data(const QModelIndex &index, int role) const
   case AuthorRole: return event.authorLogin;
   case DisplayNameRole: return event.displayName;
   case BodyRole: return event.body;
-  case ColorRole: return event.color.isEmpty() ? QStringLiteral("#f5f5f5") : event.color;
+  case ColorRole: return resolvedUserColor(event.authorLogin, event.color);
   case TimestampRole: return event.timestamp.toLocalTime().toString(QStringLiteral("HH:mm"));
   case ActionRole: return event.action;
   case NoticeRole: return event.type == ChatEvent::Notice;
@@ -124,8 +125,10 @@ void ChatModel::setClientId(const QString &clientId)
   const QString trimmed = clientId.trimmed();
   if (m_clientId == trimmed) return;
   m_clientId = trimmed;
+  ++m_requestGeneration;
   emit clientIdChanged();
   requestBadgeAssets();
+  requestSenderColor();
 }
 
 QString ChatModel::accessToken() const { return m_accessToken; }
@@ -135,8 +138,10 @@ void ChatModel::setAccessToken(const QString &accessToken)
   const QString trimmed = accessToken.trimmed();
   if (m_accessToken == trimmed) return;
   m_accessToken = trimmed;
+  ++m_requestGeneration;
   emit accessTokenChanged();
   requestBadgeAssets();
+  requestSenderColor();
 }
 
 QVariantList ChatModel::knownUsers() const
@@ -210,9 +215,17 @@ QStringList ChatModel::preloadEmoteImageUrls() const
 
 void ChatModel::setSender(const QString &userId, const QString &login, const QString &displayName)
 {
-  m_senderUserId = userId.trimmed();
-  m_senderLogin = login.trimmed().toLower();
-  m_senderDisplayName = displayName.trimmed();
+  const QString normalizedUserId = userId.trimmed();
+  const QString normalizedLogin = login.trimmed().toLower();
+  const QString normalizedDisplayName = displayName.trimmed();
+  if (m_senderUserId == normalizedUserId && m_senderLogin == normalizedLogin && m_senderDisplayName == normalizedDisplayName) return;
+  ++m_requestGeneration;
+  m_senderUserId = normalizedUserId;
+  m_senderLogin = normalizedLogin;
+  m_senderDisplayName = normalizedDisplayName;
+  m_senderColor = m_userColors.value(m_senderLogin);
+  requestBadgeAssets();
+  requestSenderColor();
   if (!m_events.isEmpty()) emit dataChanged(index(0), index(m_events.size() - 1), {MentionedRole, MessagePartsRole});
 }
 
@@ -220,14 +233,20 @@ void ChatModel::join(const QString &channelLogin)
 {
   const QString login = channelLogin.trimmed().toLower();
   if (login.isEmpty()) return;
+  m_shouldReconnect = true;
+  m_reconnectTimer.stop();
   if (m_channel != login) {
+    ++m_requestGeneration;
     clear();
     m_channel = login;
     m_broadcasterId.clear();
+    const bool hadChannelBadges = !m_channelBadgeAssets.isEmpty();
+    m_channelBadgeAssets.clear();
     m_channelEmotes.clear();
     m_sevenTvChannelEmotes.clear();
     m_ffzChannelEmotes.clear();
     m_bttvChannelEmotes.clear();
+    if (hadChannelBadges) notifyBadgeAssetsChanged();
     emit emotePickerEmotesChanged();
     emit channelChanged();
   }
@@ -239,6 +258,7 @@ void ChatModel::join(const QString &channelLogin)
 
 void ChatModel::disconnectChat()
 {
+  m_shouldReconnect = false;
   m_reconnectTimer.stop();
   m_socket.close();
   setStatus(tr("Chat disconnected."));
@@ -324,7 +344,15 @@ void ChatModel::insertEvent(ChatEvent event)
 {
   Q_ASSERT(thread() == QThread::currentThread());
   Q_ASSERT(!m_modelMutationActive);
-  if (!event.id.isEmpty() && m_seenIds.contains(event.id)) return;
+  if (!event.id.isEmpty() && m_seenIds.contains(event.id)) {
+    const int existingIndex = eventIndexById(event.id);
+    if (existingIndex < 0 || !m_events.at(existingIndex).provisional || event.provisional) return;
+    event.deleted = event.deleted || m_events.at(existingIndex).deleted;
+    rememberUser(event);
+    m_events[existingIndex] = std::move(event);
+    emit dataChanged(index(existingIndex), index(existingIndex));
+    return;
+  }
   if (!event.id.isEmpty()) m_seenIds.insert(event.id);
   rememberUser(event);
   m_modelMutationActive = true;
@@ -338,10 +366,22 @@ void ChatModel::insertEvent(ChatEvent event)
 void ChatModel::rememberUser(const ChatEvent &event)
 {
   if (event.authorLogin.isEmpty() || event.type == ChatEvent::Notice) return;
+  const QString login = event.authorLogin.trimmed().toLower();
   const QString displayName = event.displayName.isEmpty() ? event.authorLogin : event.displayName;
-  if (m_knownUsers.value(event.authorLogin) == displayName) return;
-  m_knownUsers.insert(event.authorLogin, displayName);
-  emit knownUsersChanged();
+  if (m_knownUsers.value(login) != displayName) {
+    m_knownUsers.insert(login, displayName);
+    emit knownUsersChanged();
+  }
+  const QString color = normalizedColor(event.color);
+  if (!color.isEmpty() && m_userColors.value(login) != color) {
+    m_userColors.insert(login, color);
+    if (login == m_senderLogin) m_senderColor = color;
+    for (int i = 0; i < m_events.size(); ++i) {
+      if (m_events.at(i).authorLogin.compare(login, Qt::CaseInsensitive) == 0 && normalizedColor(m_events.at(i).color).isEmpty()) {
+        emit dataChanged(index(i), index(i), {ColorRole});
+      }
+    }
+  }
 }
 
 void ChatModel::applyModeration(const ChatEvent &event)
@@ -350,16 +390,16 @@ void ChatModel::applyModeration(const ChatEvent &event)
     for (int i = 0; i < m_events.size(); ++i) {
       if (m_events[i].id == event.targetMessageId) {
         m_events[i].deleted = true;
-        emit dataChanged(index(i), index(i), {DeletedRole});
+        emit dataChanged(index(i), index(i), {DeletedRole, MessagePartsRole, PlainTextRole});
         return;
       }
     }
   }
   if (event.type == ChatEvent::ClearChat) {
     for (int i = 0; i < m_events.size(); ++i) {
-      if (m_events[i].authorLogin == event.targetUserLogin) {
+      if (event.targetUserLogin.isEmpty() || m_events[i].authorLogin == event.targetUserLogin) {
         m_events[i].deleted = true;
-        emit dataChanged(index(i), index(i), {DeletedRole});
+        emit dataChanged(index(i), index(i), {DeletedRole, MessagePartsRole, PlainTextRole});
       }
     }
   }
@@ -386,6 +426,7 @@ void ChatModel::trimHistory()
 void ChatModel::connectSocketSignals()
 {
   connect(&m_socket, &QWebSocket::connected, this, [this]() {
+    m_reconnectTimer.stop();
     m_reconnectAttempts = 0;
     emit connectedChanged();
     setStatus(tr("Connected to #%1 chat.").arg(m_channel));
@@ -396,7 +437,7 @@ void ChatModel::connectSocketSignals()
   });
   connect(&m_socket, &QWebSocket::disconnected, this, [this]() {
     emit connectedChanged();
-    if (!m_channel.isEmpty()) requestReconnect();
+    if (m_shouldReconnect && !m_channel.isEmpty()) requestReconnect();
   });
   connect(&m_socket, &QWebSocket::textMessageReceived, this, [this](const QString &message) {
     for (const QString &line : message.split(QStringLiteral("\r\n"), Qt::SkipEmptyParts)) {
@@ -420,6 +461,7 @@ void ChatModel::connectSocketSignals()
 
 void ChatModel::requestReconnect()
 {
+  if (!m_shouldReconnect || m_channel.isEmpty() || m_reconnectTimer.isActive()) return;
   const int delay = qMin(30000, 1000 * (1 << qMin(m_reconnectAttempts, 5)));
   ++m_reconnectAttempts;
   setStatus(tr("Chat disconnected. Reconnecting in %1s...").arg(delay / 1000));
@@ -430,62 +472,42 @@ void ChatModel::requestBadgeAssets()
 {
   if (m_clientId.isEmpty() || m_accessToken.isEmpty() || m_channel.isEmpty()) return;
   const QString channelSnapshot = m_channel;
-  requestBadges(QStringLiteral("/chat/badges/global"), channelSnapshot);
-  if (m_globalEmotes.isEmpty()) requestEmotes(QStringLiteral("/chat/emotes/global"), tr("Global"), channelSnapshot, false);
-  if (m_sevenTvGlobalEmotes.isEmpty()) requestSevenTvGlobalEmotes(channelSnapshot);
-  if (m_ffzGlobalEmotes.isEmpty()) requestFfzGlobalEmotes(channelSnapshot);
-  if (m_bttvGlobalEmotes.isEmpty()) requestBttvGlobalEmotes(channelSnapshot);
+  const quint64 generation = m_requestGeneration;
+  const quint64 badgeGeneration = ++m_badgeRequestGeneration;
+  requestBadges(QStringLiteral("/chat/badges/global"), channelSnapshot, generation, badgeGeneration, false);
+  if (m_globalEmotes.isEmpty()) requestEmotes(QStringLiteral("/chat/emotes/global"), tr("Global"), channelSnapshot, generation, false);
+  if (m_sevenTvGlobalEmotes.isEmpty()) requestSevenTvGlobalEmotes(channelSnapshot, generation);
+  if (m_ffzGlobalEmotes.isEmpty()) requestFfzGlobalEmotes(channelSnapshot, generation);
+  if (m_bttvGlobalEmotes.isEmpty()) requestBttvGlobalEmotes(channelSnapshot, generation);
 
   QNetworkRequest request = authenticatedTwitchRequest(QStringLiteral("/users?login=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(channelSnapshot))));
   QNetworkReply *reply = m_network.get(request);
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot]() {
-    if (channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation, badgeGeneration]() {
+    if (generation == m_requestGeneration && channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
       const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
       const QJsonArray data = object.value(QStringLiteral("data")).toArray();
       const QString broadcasterId = data.isEmpty() ? QString() : data.first().toObject().value(QStringLiteral("id")).toString();
       if (!broadcasterId.isEmpty()) {
         m_broadcasterId = broadcasterId;
-        requestBadges(QStringLiteral("/chat/badges?broadcaster_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))), channelSnapshot);
-        requestEmotes(QStringLiteral("/chat/emotes?broadcaster_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))), tr("Channel"), channelSnapshot, true);
-        requestSevenTvChannelEmotes(broadcasterId, channelSnapshot);
-        requestFfzChannelEmotes(broadcasterId, channelSnapshot);
-        requestBttvChannelEmotes(broadcasterId, channelSnapshot);
+        requestBadges(QStringLiteral("/chat/badges?broadcaster_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))), channelSnapshot, generation, badgeGeneration, true);
+        requestEmotes(QStringLiteral("/chat/emotes?broadcaster_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))), tr("Channel"), channelSnapshot, generation, true);
+        requestSevenTvChannelEmotes(broadcasterId, channelSnapshot, generation);
+        requestFfzChannelEmotes(broadcasterId, channelSnapshot, generation);
+        requestBttvChannelEmotes(broadcasterId, channelSnapshot, generation);
       }
     }
     reply->deleteLater();
   });
 }
 
-void ChatModel::requestBadges(const QString &path, const QString &channelSnapshot)
+void ChatModel::requestBadges(const QString &path, const QString &channelSnapshot, quint64 generation, quint64 badgeGeneration, bool channelScoped)
 {
   QNetworkReply *reply = m_network.get(authenticatedTwitchRequest(path));
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot]() {
-    if (channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
-      const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
-      bool changed = false;
-      for (const QJsonValue &setValue : object.value(QStringLiteral("data")).toArray()) {
-        const QJsonObject set = setValue.toObject();
-        const QString setId = set.value(QStringLiteral("set_id")).toString();
-        if (setId.isEmpty()) continue;
-        for (const QJsonValue &versionValue : set.value(QStringLiteral("versions")).toArray()) {
-          const QJsonObject version = versionValue.toObject();
-          const QString id = version.value(QStringLiteral("id")).toString();
-          if (id.isEmpty()) continue;
-          const QString key = QStringLiteral("%1/%2").arg(setId, id);
-          BadgeAsset asset;
-          asset.title = version.value(QStringLiteral("title")).toString(key);
-          asset.imageUrl = version.value(QStringLiteral("image_url_2x")).toString(version.value(QStringLiteral("image_url_1x")).toString());
-          const BadgeAsset previous = m_badgeAssets.value(key);
-          if (previous.title != asset.title || previous.imageUrl != asset.imageUrl) {
-            m_badgeAssets.insert(key, std::move(asset));
-            changed = true;
-          }
-        }
-      }
-      if (changed) notifyBadgeAssetsChanged();
-    }
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation, badgeGeneration, channelScoped]() {
+    const QByteArray payload = reply->readAll();
+    if (reply->error() == QNetworkReply::NoError) applyBadgePayload(payload, channelScoped, generation, badgeGeneration, channelSnapshot);
     reply->deleteLater();
   });
 }
@@ -494,26 +516,27 @@ void ChatModel::requestEmoteAssets()
 {
   if (m_clientId.isEmpty() || m_accessToken.isEmpty()) return;
   const QString channelSnapshot = m_channel;
-  requestEmotes(QStringLiteral("/chat/emotes/global"), tr("Global"), channelSnapshot, false);
-  requestSevenTvGlobalEmotes(channelSnapshot);
-  requestFfzGlobalEmotes(channelSnapshot);
-  requestBttvGlobalEmotes(channelSnapshot);
+  const quint64 generation = m_requestGeneration;
+  requestEmotes(QStringLiteral("/chat/emotes/global"), tr("Global"), channelSnapshot, generation, false);
+  requestSevenTvGlobalEmotes(channelSnapshot, generation);
+  requestFfzGlobalEmotes(channelSnapshot, generation);
+  requestBttvGlobalEmotes(channelSnapshot, generation);
   if (!m_broadcasterId.isEmpty()) {
-    requestEmotes(QStringLiteral("/chat/emotes?broadcaster_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(m_broadcasterId))), tr("Channel"), channelSnapshot, true);
-    requestSevenTvChannelEmotes(m_broadcasterId, channelSnapshot);
-    requestFfzChannelEmotes(m_broadcasterId, channelSnapshot);
-    requestBttvChannelEmotes(m_broadcasterId, channelSnapshot);
+    requestEmotes(QStringLiteral("/chat/emotes?broadcaster_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(m_broadcasterId))), tr("Channel"), channelSnapshot, generation, true);
+    requestSevenTvChannelEmotes(m_broadcasterId, channelSnapshot, generation);
+    requestFfzChannelEmotes(m_broadcasterId, channelSnapshot, generation);
+    requestBttvChannelEmotes(m_broadcasterId, channelSnapshot, generation);
   } else if (!m_channel.isEmpty()) {
     requestBadgeAssets();
   }
 }
 
-void ChatModel::requestEmotes(const QString &path, const QString &owner, const QString &channelSnapshot, bool channelScoped)
+void ChatModel::requestEmotes(const QString &path, const QString &owner, const QString &channelSnapshot, quint64 generation, bool channelScoped)
 {
   QNetworkReply *reply = m_network.get(authenticatedTwitchRequest(path));
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, owner, channelSnapshot, channelScoped]() {
-    if ((channelSnapshot.isEmpty() || channelSnapshot == m_channel) && reply->error() == QNetworkReply::NoError) {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, owner, channelSnapshot, generation, channelScoped]() {
+    if (generation == m_requestGeneration && (channelSnapshot.isEmpty() || channelSnapshot == m_channel) && reply->error() == QNetworkReply::NoError) {
       const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
       QVector<EmoteAsset> parsed;
       for (const QJsonValue &value : object.value(QStringLiteral("data")).toArray()) {
@@ -536,12 +559,12 @@ void ChatModel::requestEmotes(const QString &path, const QString &owner, const Q
   });
 }
 
-void ChatModel::requestSevenTvGlobalEmotes(const QString &channelSnapshot)
+void ChatModel::requestSevenTvGlobalEmotes(const QString &channelSnapshot, quint64 generation)
 {
   QNetworkReply *reply = m_network.get(providerRequest(QUrl(QStringLiteral("https://7tv.io/v3/emote-sets/global"))));
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot]() {
-    if ((channelSnapshot.isEmpty() || channelSnapshot == m_channel) && reply->error() == QNetworkReply::NoError) {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation]() {
+    if (generation == m_requestGeneration && (channelSnapshot.isEmpty() || channelSnapshot == m_channel) && reply->error() == QNetworkReply::NoError) {
       const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
       QVector<EmoteAsset> parsed;
       for (const QJsonValue &value : object.value(QStringLiteral("emotes")).toArray()) {
@@ -563,12 +586,12 @@ void ChatModel::requestSevenTvGlobalEmotes(const QString &channelSnapshot)
   });
 }
 
-void ChatModel::requestSevenTvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot)
+void ChatModel::requestSevenTvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, quint64 generation)
 {
   QNetworkReply *reply = m_network.get(providerRequest(QUrl(QStringLiteral("https://7tv.io/v3/users/twitch/%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))))));
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot]() {
-    if (channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation]() {
+    if (generation == m_requestGeneration && channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
       const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
       const QJsonObject set = object.value(QStringLiteral("emote_set")).toObject();
       QVector<EmoteAsset> parsed;
@@ -617,12 +640,12 @@ QString ChatModel::sevenTvImageUrl(const QJsonObject &data)
   return {};
 }
 
-void ChatModel::requestFfzGlobalEmotes(const QString &channelSnapshot)
+void ChatModel::requestFfzGlobalEmotes(const QString &channelSnapshot, quint64 generation)
 {
   QNetworkReply *reply = m_network.get(providerRequest(QUrl(QStringLiteral("https://api.frankerfacez.com/v1/set/global"))));
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot]() {
-    if ((channelSnapshot.isEmpty() || channelSnapshot == m_channel) && reply->error() == QNetworkReply::NoError) {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation]() {
+    if (generation == m_requestGeneration && (channelSnapshot.isEmpty() || channelSnapshot == m_channel) && reply->error() == QNetworkReply::NoError) {
       const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
       QVector<EmoteAsset> parsed;
       const QJsonObject sets = object.value(QStringLiteral("sets")).toObject();
@@ -649,12 +672,12 @@ void ChatModel::requestFfzGlobalEmotes(const QString &channelSnapshot)
   });
 }
 
-void ChatModel::requestFfzChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot)
+void ChatModel::requestFfzChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, quint64 generation)
 {
   QNetworkReply *reply = m_network.get(providerRequest(QUrl(QStringLiteral("https://api.frankerfacez.com/v1/room/id/%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))))));
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot]() {
-    if (channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation]() {
+    if (generation == m_requestGeneration && channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
       const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
       QVector<EmoteAsset> parsed;
       const QJsonObject sets = object.value(QStringLiteral("sets")).toObject();
@@ -681,12 +704,12 @@ void ChatModel::requestFfzChannelEmotes(const QString &broadcasterId, const QStr
   });
 }
 
-void ChatModel::requestBttvGlobalEmotes(const QString &channelSnapshot)
+void ChatModel::requestBttvGlobalEmotes(const QString &channelSnapshot, quint64 generation)
 {
   QNetworkReply *reply = m_network.get(providerRequest(QUrl(QStringLiteral("https://api.betterttv.net/3/cached/emotes/global"))));
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot]() {
-    if ((channelSnapshot.isEmpty() || channelSnapshot == m_channel) && reply->error() == QNetworkReply::NoError) {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation]() {
+    if (generation == m_requestGeneration && (channelSnapshot.isEmpty() || channelSnapshot == m_channel) && reply->error() == QNetworkReply::NoError) {
       const QJsonArray items = QJsonDocument::fromJson(reply->readAll()).array();
       QVector<EmoteAsset> parsed;
       for (const QJsonValue &value : items) {
@@ -707,12 +730,12 @@ void ChatModel::requestBttvGlobalEmotes(const QString &channelSnapshot)
   });
 }
 
-void ChatModel::requestBttvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot)
+void ChatModel::requestBttvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, quint64 generation)
 {
   QNetworkReply *reply = m_network.get(providerRequest(QUrl(QStringLiteral("https://api.betterttv.net/3/cached/users/twitch/%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))))));
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot]() {
-    if (channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation]() {
+    if (generation == m_requestGeneration && channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
       const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
       QVector<EmoteAsset> parsed;
       const auto appendArray = [&parsed, this](const QJsonArray &items) {
@@ -740,18 +763,19 @@ void ChatModel::requestBttvChannelEmotes(const QString &broadcasterId, const QSt
 void ChatModel::requestChannelIdForSend(const QString &body, const QString &replyParentMessageId)
 {
   const QString channelSnapshot = m_channel;
+  const quint64 generation = m_requestGeneration;
   QNetworkRequest request = authenticatedTwitchRequest(QStringLiteral("/users?login=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(channelSnapshot))));
   QNetworkReply *reply = m_network.get(request);
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, body, replyParentMessageId]() {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation, body, replyParentMessageId]() {
     const QByteArray payload = reply->readAll();
-    if (channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
+    if (generation == m_requestGeneration && channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
       const QJsonObject object = QJsonDocument::fromJson(payload).object();
       const QJsonArray data = object.value(QStringLiteral("data")).toArray();
       m_broadcasterId = data.isEmpty() ? QString() : data.first().toObject().value(QStringLiteral("id")).toString();
       if (!m_broadcasterId.isEmpty()) postChatMessage(channelSnapshot, m_broadcasterId, body, replyParentMessageId);
       else setStatus(tr("Could not resolve #%1 before sending chat.").arg(channelSnapshot));
-    } else if (channelSnapshot == m_channel) {
+    } else if (generation == m_requestGeneration && channelSnapshot == m_channel) {
       const QJsonObject object = QJsonDocument::fromJson(payload).object();
       const QString message = object.value(QStringLiteral("message")).toString(reply->errorString());
       setStatus(tr("Could not resolve chat channel: %1").arg(message));
@@ -767,34 +791,44 @@ void ChatModel::postChatMessage(const QString &channel, const QString &broadcast
 
   const QString senderLogin = m_senderLogin;
   const QString senderDisplayName = m_senderDisplayName;
+  const QString senderUserId = m_senderUserId;
+  const quint64 generation = m_requestGeneration;
   QJsonObject payload{{QStringLiteral("broadcaster_id"), broadcasterId},
-                      {QStringLiteral("sender_id"), m_senderUserId},
+                      {QStringLiteral("sender_id"), senderUserId},
                       {QStringLiteral("message"), body}};
   if (!replyParentMessageId.isEmpty()) payload.insert(QStringLiteral("reply_parent_message_id"), replyParentMessageId);
   QNetworkReply *reply = m_network.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channel, body, senderLogin, senderDisplayName, replyParentMessageId]() {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channel, generation, senderUserId, body, senderLogin, senderDisplayName, replyParentMessageId]() {
     const QByteArray payload = reply->readAll();
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    const bool currentOperation = generation == m_requestGeneration && channel == m_channel && senderUserId == m_senderUserId;
     if (reply->error() != QNetworkReply::NoError) {
       const QString message = object.value(QStringLiteral("message")).toString(reply->errorString());
-      if (channel == m_channel) setStatus(tr("Could not send chat message: %1").arg(message));
+      if (currentOperation) setStatus(tr("Could not send chat message: %1").arg(message));
       reply->deleteLater();
       return;
     }
 
     const QJsonArray data = object.value(QStringLiteral("data")).toArray();
     const QJsonObject result = data.isEmpty() ? QJsonObject() : data.first().toObject();
-    if (!result.value(QStringLiteral("is_sent")).toBool(true)) {
+    if (data.isEmpty() || !result.value(QStringLiteral("is_sent")).toBool(false)) {
       const QJsonObject dropReason = result.value(QStringLiteral("drop_reason")).toObject();
       const QString reason = dropReason.value(QStringLiteral("message")).toString(tr("Twitch rejected the message."));
-      if (channel == m_channel) setStatus(tr("Could not send chat message: %1").arg(reason));
+      if (currentOperation) setStatus(tr("Could not send chat message: %1").arg(reason));
       reply->deleteLater();
       return;
     }
 
-    if (channel == m_channel) {
-      insertSentMessage(channel, result.value(QStringLiteral("message_id")).toString(), body, senderLogin, senderDisplayName, replyParentMessageId);
+    const QString messageId = result.value(QStringLiteral("message_id")).toString().trimmed();
+    if (messageId.isEmpty()) {
+      if (currentOperation) setStatus(tr("Twitch sent an incomplete chat response."));
+      reply->deleteLater();
+      return;
+    }
+
+    if (currentOperation) {
+      insertSentMessage(channel, messageId, body, senderLogin, senderDisplayName, replyParentMessageId);
       emit sendSucceeded();
     }
     reply->deleteLater();
@@ -806,7 +840,8 @@ void ChatModel::insertSentMessage(const QString &channel, const QString &message
 {
   ChatEvent event;
   event.type = ChatEvent::Message;
-  event.id = messageId.isEmpty() ? QStringLiteral("local-%1").arg(QRandomGenerator::global()->generate64()) : messageId;
+  if (messageId.isEmpty()) return;
+  event.id = messageId;
   event.channel = channel;
   event.authorLogin = senderLogin.isEmpty() ? QStringLiteral("you") : senderLogin;
   event.displayName = senderDisplayName.isEmpty() ? QStringLiteral("You") : senderDisplayName;
@@ -816,18 +851,117 @@ void ChatModel::insertSentMessage(const QString &channel, const QString &message
     event.replyParentUser = parent->displayName.isEmpty() ? parent->authorLogin : parent->displayName;
     event.replyParentBody = parent->deleted ? tr("<message deleted>") : parent->body.left(180);
   }
-  event.color = QStringLiteral("#f8fafc");
+  event.color = normalizedColor(m_senderColor);
+  event.provisional = true;
   event.timestamp = QDateTime::currentDateTimeUtc();
   insertEvent(std::move(event));
 }
 
 const ChatEvent *ChatModel::eventById(const QString &messageId) const
 {
-  if (messageId.isEmpty()) return nullptr;
-  for (const ChatEvent &event : m_events) {
-    if (event.id == messageId) return &event;
+  const int eventIndex = eventIndexById(messageId);
+  return eventIndex < 0 ? nullptr : &m_events.at(eventIndex);
+}
+
+int ChatModel::eventIndexById(const QString &messageId) const
+{
+  if (messageId.isEmpty()) return -1;
+  for (int i = 0; i < m_events.size(); ++i) {
+    if (m_events.at(i).id == messageId) return i;
   }
-  return nullptr;
+  return -1;
+}
+
+QString ChatModel::normalizedColor(const QString &color)
+{
+  const QColor parsed(color.trimmed());
+  if (!parsed.isValid() || parsed.alpha() == 0) return {};
+  return parsed.name(QColor::HexRgb).toLower();
+}
+
+QString ChatModel::fallbackUserColor(const QString &login)
+{
+  static const QStringList palette{QStringLiteral("#ff6b6b"), QStringLiteral("#f59f00"), QStringLiteral("#94d82d"), QStringLiteral("#20c997"),
+                                   QStringLiteral("#22b8cf"), QStringLiteral("#4dabf7"), QStringLiteral("#748ffc"), QStringLiteral("#9775fa"),
+                                   QStringLiteral("#da77f2"), QStringLiteral("#f06595")};
+  quint32 hash = 2166136261u;
+  const QByteArray bytes = login.trimmed().toLower().toUtf8();
+  for (const char byte : bytes) {
+    hash ^= static_cast<quint8>(byte);
+    hash *= 16777619u;
+  }
+  return palette.at(static_cast<int>(hash % static_cast<quint32>(palette.size())));
+}
+
+QString ChatModel::resolvedUserColor(const QString &login, const QString &metadataColor) const
+{
+  const QString direct = normalizedColor(metadataColor);
+  if (!direct.isEmpty()) return direct;
+  const QString normalizedLogin = login.trimmed().toLower();
+  const QString cached = normalizedColor(m_userColors.value(normalizedLogin));
+  if (!cached.isEmpty()) return cached;
+  if (normalizedLogin == m_senderLogin) {
+    const QString senderColor = normalizedColor(m_senderColor);
+    if (!senderColor.isEmpty()) return senderColor;
+  }
+  return fallbackUserColor(normalizedLogin);
+}
+
+bool ChatModel::applyBadgePayload(const QByteArray &payload, bool channelScoped, quint64 generation, quint64 badgeGeneration, const QString &channelSnapshot)
+{
+  if (generation != m_requestGeneration || badgeGeneration != m_badgeRequestGeneration || channelSnapshot != m_channel) return false;
+  const QJsonDocument document = QJsonDocument::fromJson(payload);
+  if (!document.isObject() || !document.object().value(QStringLiteral("data")).isArray()) return false;
+
+  QHash<QString, BadgeAsset> parsed;
+  for (const QJsonValue &setValue : document.object().value(QStringLiteral("data")).toArray()) {
+    const QJsonObject set = setValue.toObject();
+    const QString setId = set.value(QStringLiteral("set_id")).toString();
+    if (setId.isEmpty()) continue;
+    for (const QJsonValue &versionValue : set.value(QStringLiteral("versions")).toArray()) {
+      const QJsonObject version = versionValue.toObject();
+      const QString id = version.value(QStringLiteral("id")).toString();
+      if (id.isEmpty()) continue;
+      const QString key = QStringLiteral("%1/%2").arg(setId, id);
+      BadgeAsset asset;
+      asset.title = version.value(QStringLiteral("title")).toString(key);
+      asset.imageUrl = version.value(QStringLiteral("image_url_2x")).toString(version.value(QStringLiteral("image_url_1x")).toString());
+      if (!asset.imageUrl.isEmpty()) parsed.insert(key, std::move(asset));
+    }
+  }
+
+  QHash<QString, BadgeAsset> &target = channelScoped ? m_channelBadgeAssets : m_globalBadgeAssets;
+  if (target == parsed) return true;
+  target = std::move(parsed);
+  notifyBadgeAssetsChanged();
+  return true;
+}
+
+void ChatModel::requestSenderColor()
+{
+  if (m_clientId.isEmpty() || m_accessToken.isEmpty() || m_senderUserId.isEmpty() || m_senderLogin.isEmpty()) return;
+  const quint64 generation = m_requestGeneration;
+  const QString userId = m_senderUserId;
+  const QString login = m_senderLogin;
+  QNetworkReply *reply = m_network.get(authenticatedTwitchRequest(
+      QStringLiteral("/chat/color?user_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(userId)))));
+  reply->setParent(this);
+  connect(reply, &QNetworkReply::finished, this, [this, reply, generation, userId, login]() {
+    if (generation == m_requestGeneration && userId == m_senderUserId && login == m_senderLogin && reply->error() == QNetworkReply::NoError) {
+      const QJsonArray data = QJsonDocument::fromJson(reply->readAll()).object().value(QStringLiteral("data")).toArray();
+      const QString color = data.isEmpty() ? QString() : normalizedColor(data.first().toObject().value(QStringLiteral("color")).toString());
+      if (!color.isEmpty() && color != m_senderColor) {
+        m_senderColor = color;
+        m_userColors.insert(login, color);
+        for (int i = 0; i < m_events.size(); ++i) {
+          if (m_events.at(i).authorLogin.compare(login, Qt::CaseInsensitive) != 0 || !normalizedColor(m_events.at(i).color).isEmpty()) continue;
+          if (m_events.at(i).provisional) m_events[i].color = color;
+          emit dataChanged(index(i), index(i), {ColorRole});
+        }
+      }
+    }
+    reply->deleteLater();
+  });
 }
 
 void ChatModel::notifyBadgeAssetsChanged()
@@ -864,7 +998,8 @@ QVariantList ChatModel::badgeAssetsFor(const ChatEvent &event) const
 {
   QVariantList assets;
   for (const QString &badge : event.badges) {
-    const BadgeAsset asset = m_badgeAssets.value(badge);
+    BadgeAsset asset = m_channelBadgeAssets.value(badge);
+    if (asset.imageUrl.isEmpty()) asset = m_globalBadgeAssets.value(badge);
     if (asset.imageUrl.isEmpty()) continue;
     QVariantMap map;
     map.insert(QStringLiteral("key"), badge);
@@ -898,6 +1033,13 @@ QVariantList ChatModel::messagePartsFor(const ChatEvent &event) const
 {
   QVariantList parts;
   const QString text = event.deleted ? tr("<message deleted>") : event.body;
+  if (event.deleted) {
+    QVariantMap textPart;
+    textPart.insert(QStringLiteral("type"), QStringLiteral("text"));
+    textPart.insert(QStringLiteral("text"), text);
+    parts.push_back(textPart);
+    return parts;
+  }
   const auto appendTextParts = [this, &parts](const QString &segment) {
     QString bufferedText;
     const auto flushText = [&parts, &bufferedText]() {

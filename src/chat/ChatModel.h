@@ -89,6 +89,8 @@ private:
   struct BadgeAsset {
     QString title;
     QString imageUrl;
+
+    bool operator==(const BadgeAsset &) const = default;
   };
   struct EmoteAsset {
     QString id;
@@ -101,7 +103,9 @@ private:
   QVector<ChatEvent> m_events;
   QSet<QString> m_seenIds;
   QHash<QString, QString> m_knownUsers;
-  QHash<QString, BadgeAsset> m_badgeAssets;
+  QHash<QString, QString> m_userColors;
+  QHash<QString, BadgeAsset> m_globalBadgeAssets;
+  QHash<QString, BadgeAsset> m_channelBadgeAssets;
   QVector<EmoteAsset> m_globalEmotes;
   QVector<EmoteAsset> m_channelEmotes;
   QVector<EmoteAsset> m_sevenTvGlobalEmotes;
@@ -116,6 +120,7 @@ private:
   QString m_senderUserId;
   QString m_senderLogin;
   QString m_senderDisplayName;
+  QString m_senderColor;
   QString m_status;
   QString m_clientId;
   QString m_accessToken;
@@ -123,7 +128,10 @@ private:
   QWebSocket m_socket;
   QTimer m_reconnectTimer;
   int m_reconnectAttempts = 0;
+  quint64 m_requestGeneration = 0;
+  quint64 m_badgeRequestGeneration = 0;
   bool m_modelMutationActive = false;
+  bool m_shouldReconnect = false;
 
   void setStatus(QString status);
   void insertEvent(ChatEvent event);
@@ -133,21 +141,27 @@ private:
   void connectSocketSignals();
   void requestReconnect();
   void requestBadgeAssets();
-  void requestBadges(const QString &path, const QString &channelSnapshot);
+  void requestBadges(const QString &path, const QString &channelSnapshot, quint64 generation, quint64 badgeGeneration, bool channelScoped);
   void requestEmoteAssets();
-  void requestEmotes(const QString &path, const QString &owner, const QString &channelSnapshot, bool channelScoped);
-  void requestSevenTvGlobalEmotes(const QString &channelSnapshot);
-  void requestSevenTvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot);
+  void requestEmotes(const QString &path, const QString &owner, const QString &channelSnapshot, quint64 generation, bool channelScoped);
+  void requestSevenTvGlobalEmotes(const QString &channelSnapshot, quint64 generation);
+  void requestSevenTvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, quint64 generation);
   [[nodiscard]] static QString sevenTvImageUrl(const QJsonObject &data);
-  void requestFfzGlobalEmotes(const QString &channelSnapshot);
-  void requestFfzChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot);
-  void requestBttvGlobalEmotes(const QString &channelSnapshot);
-  void requestBttvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot);
+  void requestFfzGlobalEmotes(const QString &channelSnapshot, quint64 generation);
+  void requestFfzChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, quint64 generation);
+  void requestBttvGlobalEmotes(const QString &channelSnapshot, quint64 generation);
+  void requestBttvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, quint64 generation);
+  void requestSenderColor();
   void requestChannelIdForSend(const QString &body, const QString &replyParentMessageId = {});
   void postChatMessage(const QString &channel, const QString &broadcasterId, const QString &body, const QString &replyParentMessageId = {});
   void insertSentMessage(const QString &channel, const QString &messageId, const QString &body, const QString &senderLogin, const QString &senderDisplayName,
                          const QString &replyParentMessageId = {});
   [[nodiscard]] const ChatEvent *eventById(const QString &messageId) const;
+  [[nodiscard]] int eventIndexById(const QString &messageId) const;
+  [[nodiscard]] QString resolvedUserColor(const QString &login, const QString &metadataColor = {}) const;
+  [[nodiscard]] static QString normalizedColor(const QString &color);
+  [[nodiscard]] static QString fallbackUserColor(const QString &login);
+  bool applyBadgePayload(const QByteArray &payload, bool channelScoped, quint64 generation, quint64 badgeGeneration, const QString &channelSnapshot);
   void notifyBadgeAssetsChanged();
   void notifyMessagePartsChanged();
   [[nodiscard]] QNetworkRequest authenticatedTwitchRequest(const QString &path) const;
@@ -155,4 +169,6 @@ private:
   [[nodiscard]] QVariantList badgeAssetsFor(const ChatEvent &event) const;
   [[nodiscard]] QVariantList messagePartsFor(const ChatEvent &event) const;
   [[nodiscard]] const EmoteAsset *emoteAssetForName(const QString &name) const;
+
+  friend class ChatModelTests;
 };

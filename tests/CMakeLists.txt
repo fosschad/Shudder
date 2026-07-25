@@ -4,6 +4,7 @@ set(TEST_COMMON_SOURCES
   ../src/core/XdgPaths.cpp
   ../src/storage/PreferencesService.cpp
   ../src/playback/StreamlinkResolver.cpp
+  ../src/web/PlayerHostServer.cpp
 )
 
 add_executable(shudder_core_tests
@@ -20,6 +21,7 @@ target_link_libraries(shudder_core_tests PRIVATE
   Qt6::Core
   Qt6::Network
   Qt6::Test
+  shudder_sanitizers
 )
 
 add_test(NAME shudder_core_tests COMMAND shudder_core_tests)
@@ -39,9 +41,32 @@ target_link_libraries(shudder_chat_jump_tests PRIVATE
   Qt6::Quick
   Qt6::QuickControls2
   Qt6::Test
+  shudder_sanitizers
 )
 
 add_test(NAME shudder_chat_jump_tests COMMAND shudder_chat_jump_tests)
+
+add_executable(shudder_chat_model_tests
+  tst_chat_model.cpp
+  ../src/chat/ChatModel.cpp
+  ../src/chat/IrcParser.cpp
+)
+
+target_include_directories(shudder_chat_model_tests PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_BINARY_DIR}/src/generated"
+)
+
+target_link_libraries(shudder_chat_model_tests PRIVATE
+  Qt6::Core
+  Qt6::Gui
+  Qt6::Network
+  Qt6::Test
+  Qt6::WebSockets
+  shudder_sanitizers
+)
+
+add_test(NAME shudder_chat_model_tests COMMAND shudder_chat_model_tests)
 
 add_executable(shudder_tab_transition_tests
   tst_tab_transitions.cpp
@@ -58,6 +83,7 @@ target_link_libraries(shudder_tab_transition_tests PRIVATE
   Qt6::Quick
   Qt6::QuickControls2
   Qt6::Test
+  shudder_sanitizers
 )
 
 add_test(NAME shudder_tab_transition_tests COMMAND shudder_tab_transition_tests)

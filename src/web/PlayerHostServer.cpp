@@ -51,13 +51,20 @@ void PlayerHostServer::incomingConnection(qintptr socketDescriptor)
   connect(timeout, &QTimer::timeout, socket, &QTcpSocket::disconnectFromHost);
   timeout->start();
   connect(socket, &QTcpSocket::readyRead, this, [this, socket, timeout]() {
-    const QByteArray request = socket->readAll();
-    timeout->stop();
+    QByteArray request = socket->property("requestBuffer").toByteArray();
+    request += socket->readAll();
     if (request.size() > 8192) {
+      timeout->stop();
       socket->write("HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n");
       socket->disconnectFromHost();
       return;
     }
+    if (!request.contains("\r\n\r\n")) {
+      socket->setProperty("requestBuffer", request);
+      return;
+    }
+    timeout->stop();
+    socket->setProperty("requestBuffer", QByteArray());
     const QList<QByteArray> lines = request.split('\n');
     if (lines.isEmpty()) {
       socket->disconnectFromHost();

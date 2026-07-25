@@ -4,8 +4,10 @@
 #include "playback/StreamlinkResolver.h"
 #include "shudder_config.h"
 #include "storage/PreferencesService.h"
+#include "web/PlayerHostServer.h"
 
 #include <QFile>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -15,12 +17,14 @@ class ShudderCoreTests : public QObject {
 private slots:
   void appIdentityIsShudder();
   void chatParserHandlesActionRepliesAndModeration();
+  void chatParserPreservesTrailingTextAndUnescapesOnce();
   void preferencesValidateCompatibleValues();
   void preferencesRejectCorruptionSafely();
   void streamlinkQualityParsingIsDeterministic();
   void mentionDetectionIsPrecise();
   void logRedactionRemovesCredentials();
   void navigationWhitelistRejectsLocalFiles();
+  void playerHostWaitsForCompleteHttpHeaders();
 };
 
 void ShudderCoreTests::appIdentityIsShudder()
@@ -39,6 +43,7 @@ void ShudderCoreTests::chatParserHandlesActionRepliesAndModeration()
   QCOMPARE(action->type, ChatEvent::Message);
   QVERIFY(action->action);
   QCOMPARE(action->body, QStringLiteral("Kappa waves"));
+  QCOMPARE(action->color, QStringLiteral("#ff00ff"));
   QCOMPARE(action->badges, QStringList({QStringLiteral("broadcaster/1"), QStringLiteral("subscriber/12")}));
   QCOMPARE(action->emotes.size(), 1);
   QCOMPARE(action->emotes.first().id, QStringLiteral("25"));
@@ -57,6 +62,22 @@ void ShudderCoreTests::chatParserHandlesActionRepliesAndModeration()
   QCOMPARE(ban->type, ChatEvent::ClearChat);
   QCOMPARE(ban->targetUserLogin, QStringLiteral("baduser"));
   QCOMPARE(ban->timeoutSeconds, 600);
+}
+
+void ShudderCoreTests::chatParserPreservesTrailingTextAndUnescapesOnce()
+{
+  const auto message = IrcParser::parseLine(QStringLiteral("@display-name=Back\\\\sSlash;reply-parent-msg-body=one\\stwo\\:three\\\\s :user!user@host PRIVMSG #channel :text with trailing space "));
+  QVERIFY(message.has_value());
+  QCOMPARE(message->displayName, QStringLiteral("Back\\sSlash"));
+  QCOMPARE(message->replyParentBody, QStringLiteral("one two;three\\s"));
+  QCOMPARE(message->body, QStringLiteral("text with trailing space "));
+
+  const auto terminalEscape = IrcParser::parseLine(QStringLiteral("@display-name=EndsWith\\ :user!user@host PRIVMSG #channel :body"));
+  QVERIFY(terminalEscape.has_value());
+  QCOMPARE(terminalEscape->displayName, QStringLiteral("EndsWith"));
+  const auto unknownEscape = IrcParser::parseLine(QStringLiteral("@display-name=Unknown\\x :user!user@host PRIVMSG #channel :body"));
+  QVERIFY(unknownEscape.has_value());
+  QCOMPARE(unknownEscape->displayName, QStringLiteral("Unknownx"));
 }
 
 void ShudderCoreTests::preferencesValidateCompatibleValues()
@@ -165,6 +186,38 @@ void ShudderCoreTests::navigationWhitelistRejectsLocalFiles()
   QVERIFY(UrlUtils::isAllowedTwitchActionUrl(QUrl(QStringLiteral("https://www.twitch.tv/subs/example"))));
   QVERIFY(!UrlUtils::isAllowedTwitchActionUrl(QUrl(QStringLiteral("file:///etc/passwd"))));
   QVERIFY(!UrlUtils::isAllowedTwitchActionUrl(QUrl(QStringLiteral("https://evil.example/"))));
+}
+
+void ShudderCoreTests::playerHostWaitsForCompleteHttpHeaders()
+{
+  PlayerHostServer server;
+  QVERIFY(server.start());
+  QTcpSocket socket;
+  socket.connectToHost(QHostAddress::LocalHost, server.serverPort());
+  QTRY_COMPARE_WITH_TIMEOUT(socket.state(), QAbstractSocket::ConnectedState, 1000);
+
+  const QByteArray path = server.playerUrl(QStringLiteral("example_channel")).toEncoded(QUrl::RemoveScheme | QUrl::RemoveAuthority);
+  socket.write("GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+  QVERIFY(socket.waitForBytesWritten(1000));
+  QTest::qWait(20);
+  QCOMPARE(socket.bytesAvailable(), 0);
+
+  socket.write("Connection: close\r\n\r\n");
+  QVERIFY(socket.waitForBytesWritten(1000));
+  QTRY_VERIFY_WITH_TIMEOUT(socket.bytesAvailable() > 0, 1000);
+  const QByteArray response = socket.readAll();
+  QVERIFY(response.startsWith("HTTP/1.1 200 OK\r\n"));
+  QVERIFY(response.contains("Standard Twitch Player"));
+
+  QTcpSocket oversized;
+  oversized.connectToHost(QHostAddress::LocalHost, server.serverPort());
+  QTRY_COMPARE_WITH_TIMEOUT(oversized.state(), QAbstractSocket::ConnectedState, 1000);
+  oversized.write("GET /player HTTP/1.1\r\nX-Large: " + QByteArray(5000, 'a'));
+  QVERIFY(oversized.waitForBytesWritten(1000));
+  oversized.write(QByteArray(4000, 'b'));
+  QVERIFY(oversized.waitForBytesWritten(1000));
+  QTRY_VERIFY_WITH_TIMEOUT(oversized.bytesAvailable() > 0, 1000);
+  QVERIFY(oversized.readAll().startsWith("HTTP/1.1 431 Request Header Fields Too Large\r\n"));
 }
 
 QTEST_MAIN(ShudderCoreTests)

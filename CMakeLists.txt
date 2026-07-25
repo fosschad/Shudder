@@ -52,9 +52,20 @@ endif()
 include(GNUInstallDirs)
 include(CTest)
 
+option(SHUDDER_ENABLE_SANITIZERS "Build Shudder and its tests with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+
+add_library(shudder_sanitizers INTERFACE)
+if(SHUDDER_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(shudder_sanitizers INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(shudder_sanitizers INTERFACE -fsanitize=address,undefined)
+endif()
+
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/packaging")
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network WebSockets WebEngineCore WebEngineQuick Test)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network WebSockets WebEngineCore WebEngineQuick)
+if(BUILD_TESTING)
+  find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
+endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MPV REQUIRED IMPORTED_TARGET mpv)
 pkg_check_modules(LIBSECRET IMPORTED_TARGET libsecret-1)

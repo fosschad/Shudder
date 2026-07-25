@@ -32,6 +32,7 @@ struct ChatEvent {
   QVector<ChatEmoteRange> emotes;
   bool action = false;
   bool deleted = false;
+  bool provisional = false;
   int timeoutSeconds = 0;
   QDateTime timestamp;
 };

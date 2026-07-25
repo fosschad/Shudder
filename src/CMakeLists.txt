@@ -86,16 +86,12 @@ target_link_libraries(shudder PRIVATE
   Qt6::WebEngineCore
   Qt6::WebEngineQuick
   PkgConfig::MPV
+  shudder_sanitizers
 )
 
 if(LIBSECRET_FOUND)
   target_link_libraries(shudder PRIVATE PkgConfig::LIBSECRET)
   target_compile_definitions(shudder PRIVATE SHUDDER_WITH_LIBSECRET=1)
-endif()
-
-if(SHUDDER_ENABLE_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(shudder PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-  target_link_options(shudder PRIVATE -fsanitize=address,undefined)
 endif()
 
 set_target_properties(shudder PROPERTIES

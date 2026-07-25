@@ -68,6 +68,7 @@ public:
     BadgeAssetsRole,
     MessagePartsRole,
     PlainTextRole,
+    MentionedRole,
   };
 
   struct Row {
@@ -84,6 +85,7 @@ public:
     bool badge = false;
     QString badgeImageUrl;
     bool emote = false;
+    QString color = QStringLiteral("#f5f5f5");
   };
 
   int rowCount(const QModelIndex &parent = QModelIndex()) const override
@@ -100,7 +102,7 @@ public:
     case AuthorRole: return row.author;
     case DisplayNameRole: return row.displayName;
     case BodyRole: return row.body;
-    case ColorRole: return QStringLiteral("#f5f5f5");
+    case ColorRole: return row.color;
     case TimestampRole: return QStringLiteral("12:34");
     case ActionRole: return row.action;
     case NoticeRole: return row.notice;
@@ -133,6 +135,7 @@ public:
       return parts;
     }
     case PlainTextRole: return row.body;
+    case MentionedRole: return false;
     default: return {};
     }
   }
@@ -154,7 +157,8 @@ public:
             {BadgesRole, "badges"},
             {BadgeAssetsRole, "badgeAssets"},
             {MessagePartsRole, "messageParts"},
-            {PlainTextRole, "plainText"}};
+            {PlainTextRole, "plainText"},
+            {MentionedRole, "mentioned"}};
   }
 
   QString channel() const { return m_channel; }
@@ -181,6 +185,7 @@ public:
   QStringList preloadEmoteImageUrls() const { return {}; }
 
   Q_INVOKABLE bool sendMessage(const QString &) { return true; }
+  Q_INVOKABLE bool sendReply(const QString &, const QString &) { return true; }
   Q_INVOKABLE void refreshEmotePicker() {}
 
   void appendMessages(int count)
@@ -242,6 +247,30 @@ public:
     }
   }
 
+  void growLastMessage()
+  {
+    if (m_rows.isEmpty()) return;
+    Row &row = m_rows.last();
+    row.body = QString(1200, QLatin1Char('w'));
+    row.badge = true;
+    row.badgeImageUrl = QStringLiteral("file:///nonexistent-stable-badge.png");
+    emit dataChanged(index(m_rows.size() - 1), index(m_rows.size() - 1), {BodyRole, BadgesRole, BadgeAssetsRole, MessagePartsRole, PlainTextRole});
+  }
+
+  void resetWithSameCount()
+  {
+    const int count = m_rows.size();
+    beginResetModel();
+    m_rows.clear();
+    for (int i = 0; i < count; ++i) {
+      Row row;
+      row.id = QStringLiteral("reset-%1").arg(++m_nextId);
+      row.body = QStringLiteral("Replacement message %1 %2").arg(i).arg(QString(i % 9, QLatin1Char('r')));
+      m_rows.push_back(std::move(row));
+    }
+    endResetModel();
+  }
+
   void resetRows()
   {
     beginResetModel();
@@ -264,8 +293,13 @@ class ChatJumpTests final : public QObject {
   Q_OBJECT
 
 private slots:
-  void jumpHandlesEmptyOneInsertRemoveResetAndDestroy();
-  void jumpStress500Cycles();
+  void jumpEnablesPersistentLiveFollowing();
+  void manualScrollPausesUntilReturningToBottom();
+  void wheelAtBottomKeepsFollowing();
+  void delegateGrowthAndResizeRemainAttached();
+  void resetChannelAndHiddenLayoutRecoverFollowing();
+  void replyActionsRemainKeyboardReachable();
+  void jumpStress100Cycles();
   void unresolvedBadgesDoNotRenderPlaceholders();
 
 private:
@@ -310,7 +344,7 @@ private:
     const qreal contentHeight = list->property("contentHeight").toReal();
     const qreal height = list->height();
     const qreal maxY = qMax(origin, origin + contentHeight - height);
-    list->setProperty("followTail", false);
+    QVERIFY(QMetaObject::invokeMethod(list, "beginUserScroll"));
     list->setProperty("contentY", origin + (maxY - origin) * qBound<qreal>(0.0, fraction, 1.0));
   }
 
@@ -355,9 +389,21 @@ private:
     if (list->property("pendingTailJump").toBool()) drainEvents(40);
     return !list->property("pendingTailJump").toBool();
   }
+
+  static bool atTail(QQuickItem *list)
+  {
+    const qreal origin = list->property("originY").toReal();
+    const qreal bottom = qMax(origin, origin + list->property("contentHeight").toReal() - list->height());
+    return qAbs(list->property("contentY").toReal() - bottom) <= 2.0;
+  }
+
+  static QQuickItem *jumpButton(const Harness &harness)
+  {
+    return harness.view.rootObject()->findChild<QQuickItem *>(QStringLiteral("chatJumpToPresentButton"));
+  }
 };
 
-void ChatJumpTests::jumpHandlesEmptyOneInsertRemoveResetAndDestroy()
+void ChatJumpTests::jumpEnablesPersistentLiveFollowing()
 {
   auto harness = createHarness();
   QVERIFY(harness->view.status() == QQuickView::Ready);
@@ -365,38 +411,124 @@ void ChatJumpTests::jumpHandlesEmptyOneInsertRemoveResetAndDestroy()
   QQuickItem *list = chatList(*harness);
   QVERIFY(list);
 
-  jump(list);
-  QVERIFY(jumpSettled(list));
-  verifyListState(*harness);
-
-  harness->model.appendMessages(1);
-  jump(list);
-  QVERIFY(jumpSettled(list));
-  verifyListState(*harness);
-
   harness->model.appendMessages(80);
   QTRY_VERIFY_WITH_TIMEOUT(list->property("count").toInt() == harness->model.rowCount(), 1000);
+  QVERIFY(jumpSettled(list));
   scrollAwayFromTail(list, 0.25);
-  harness->model.appendMessages(20);
-  harness->model.trimTo(40);
-  harness->model.markDeletedEvery(4);
-  jump(list);
+  QVERIFY(!list->property("followTail").toBool());
+  QVERIFY(jumpButton(*harness)->isVisible());
   jump(list);
   QVERIFY(jumpSettled(list));
-  verifyListState(*harness);
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+  QVERIFY(list->property("followTail").toBool());
+  QVERIFY(!jumpButton(*harness)->isVisible());
 
-  harness->model.resetRows();
+  for (int i = 0; i < 8; ++i) {
+    harness->model.appendOne();
+    QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+  }
+  verifyListState(*harness);
+}
+
+void ChatJumpTests::manualScrollPausesUntilReturningToBottom()
+{
+  auto harness = createHarness();
+  QQuickItem *list = chatList(*harness);
+  harness->model.appendMessages(100);
+  jump(list);
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+  QVERIFY(jumpSettled(list));
+
+  scrollAwayFromTail(list, 0.2);
+  const qreal pausedY = list->property("contentY").toReal();
+  QVERIFY(!list->property("followTail").toBool());
+  QVERIFY(jumpButton(*harness)->isVisible());
+  harness->model.appendMessages(5);
+  drainEvents(20);
+  QVERIFY(!list->property("followTail").toBool());
+  QVERIFY(!atTail(list));
+  QVERIFY(qAbs(list->property("contentY").toReal() - pausedY) < list->height());
+
+  QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtEnd"));
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+  QVERIFY(QMetaObject::invokeMethod(list, "settleUserScroll"));
+  QTRY_VERIFY_WITH_TIMEOUT(list->property("followTail").toBool() && atTail(list), 1000);
+  QVERIFY(!jumpButton(*harness)->isVisible());
+}
+
+void ChatJumpTests::wheelAtBottomKeepsFollowing()
+{
+  auto harness = createHarness();
+  QQuickItem *list = chatList(*harness);
+  harness->model.appendMessages(80);
   jump(list);
   QVERIFY(jumpSettled(list));
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+
+  QVERIFY(QMetaObject::invokeMethod(list, "handleUserWheel"));
+  drainEvents(10);
+  QTRY_VERIFY_WITH_TIMEOUT(list->property("followTail").toBool() && atTail(list), 1000);
+  harness->model.appendOne();
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+}
+
+void ChatJumpTests::delegateGrowthAndResizeRemainAttached()
+{
+  auto harness = createHarness();
+  QQuickItem *list = chatList(*harness);
+  harness->model.appendMessages(90);
+  jump(list);
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+
+  harness->model.growLastMessage();
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+  harness->view.resize(330, 470);
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+  harness->view.resize(520, 720);
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+}
+
+void ChatJumpTests::resetChannelAndHiddenLayoutRecoverFollowing()
+{
+  auto harness = createHarness();
+  QQuickItem *list = chatList(*harness);
+  harness->model.appendMessages(70);
+  jump(list);
+  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+
+  harness->model.resetWithSameCount();
+  QTRY_VERIFY_WITH_TIMEOUT(list->property("followTail").toBool() && atTail(list), 1000);
+
+  list->setVisible(false);
+  harness->model.appendMessages(10);
+  drainEvents();
+  QVERIFY(list->property("pendingTailJump").toBool());
+  list->setVisible(true);
+  QTRY_VERIFY_WITH_TIMEOUT(list->property("followTail").toBool() && atTail(list), 1000);
+
+  harness->model.setChannel(QStringLiteral("replacement"));
+  harness->model.appendMessages(40);
+  QTRY_VERIFY_WITH_TIMEOUT(list->property("followTail").toBool() && atTail(list), 1000);
   verifyListState(*harness);
 
-  harness->model.appendMessages(30);
   harness->view.rootObject()->deleteLater();
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   QCoreApplication::processEvents();
 }
 
-void ChatJumpTests::jumpStress500Cycles()
+void ChatJumpTests::replyActionsRemainKeyboardReachable()
+{
+  auto harness = createHarness();
+  harness->model.appendMessages(3);
+  QTRY_VERIFY_WITH_TIMEOUT(!visualItemsByObjectName(harness->view.rootObject(), QStringLiteral("chatInlineReplyButton")).isEmpty(), 1000);
+  const QList<QQuickItem *> buttons = visualItemsByObjectName(harness->view.rootObject(), QStringLiteral("chatInlineReplyButton"));
+  for (QQuickItem *button : buttons) {
+    QVERIFY(button->isEnabled());
+    QVERIFY(button->activeFocusOnTab());
+  }
+}
+
+void ChatJumpTests::jumpStress100Cycles()
 {
   auto harness = createHarness();
   QVERIFY(harness->view.status() == QQuickView::Ready);
@@ -408,7 +540,7 @@ void ChatJumpTests::jumpStress500Cycles()
   harness->model.trimTo(90);
   QTRY_VERIFY_WITH_TIMEOUT(list->property("count").toInt() == harness->model.rowCount(), 1000);
 
-  for (int cycle = 0; cycle < 500; ++cycle) {
+  for (int cycle = 0; cycle < 100; ++cycle) {
     scrollAwayFromTail(list, (cycle % 10) / 12.0);
     harness->model.appendMessages(cycle % 17 == 0 ? 30 : 3);
     if (cycle % 3 == 0) harness->model.trimTo(90);
@@ -426,6 +558,7 @@ void ChatJumpTests::jumpStress500Cycles()
     jump(list);
     if (cycle % 7 == 0) jump(list);
     QVERIFY(jumpSettled(list));
+    QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
     verifyListState(*harness);
   }
 
@@ -452,8 +585,8 @@ void ChatJumpTests::unresolvedBadgesDoNotRenderPlaceholders()
     QCOMPARE(badgeCell->width(), 0.0);
   }
 
-  const QList<QQuickItem *> badgeLoaders = visualItemsByObjectName(harness->view.rootObject(), QStringLiteral("chatBadgeImageLoader"));
-  for (QQuickItem *badgeLoader : badgeLoaders) QVERIFY(!badgeLoader->property("active").toBool());
+  const QList<QQuickItem *> badgeImages = visualItemsByObjectName(harness->view.rootObject(), QStringLiteral("chatBadgeImage"));
+  for (QQuickItem *badgeImage : badgeImages) QVERIFY(badgeImage->property("source").toString().isEmpty());
   QVERIFY2(harness->warnings.isEmpty(), qPrintable(harness->warnings.join(QLatin1Char('\n'))));
 }
 

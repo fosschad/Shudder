@@ -16,6 +16,7 @@ class TabTransitionTests final : public QObject {
 
 private slots:
   void persistentPagesKeepImmediateSurfacesAcrossSwitches();
+  void staleImageRetryCannotReplaceNewSource();
 
 private:
   static void collectItems(QQuickItem *item, const QString &objectName, QList<QQuickItem *> *matches)
@@ -120,6 +121,7 @@ Item {
         delegate: Components.StreamCard { width: 142; height: 250; cardHoverEnabled: false }
     }
 }
+
 )QML";
   file.close();
 
@@ -153,6 +155,60 @@ Item {
   for (const QString &warning : std::as_const(warnings)) {
     QVERIFY2(warning.contains(QStringLiteral("QQuickImage: Connection refused")), qPrintable(warning));
   }
+}
+
+void TabTransitionTests::staleImageRetryCannotReplaceNewSource()
+{
+  QTcpServer server;
+  QVERIFY(server.listen(QHostAddress::LocalHost));
+  const QByteArray imageData = QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><rect width=\"2\" height=\"2\" fill=\"red\"/></svg>");
+  QObject::connect(&server, &QTcpServer::newConnection, &server, [&server, imageData]() {
+    while (QTcpSocket *socket = server.nextPendingConnection()) {
+      QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket, imageData]() {
+        const QByteArray request = socket->readAll();
+        if (request.startsWith("GET /old")) {
+          socket->write("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        } else {
+          socket->write("HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nContent-Length: ");
+          socket->write(QByteArray::number(imageData.size()));
+          socket->write("\r\nConnection: close\r\n\r\n");
+          socket->write(imageData);
+        }
+        socket->disconnectFromHost();
+      });
+      QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+    }
+  });
+
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  const QString qmlPath = dir.filePath(QStringLiteral("stable_image_harness.qml"));
+  QFile file(qmlPath);
+  QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+  QTextStream out(&file);
+  const QString componentsImport = QUrl::fromLocalFile(QStringLiteral(SHUDDER_SOURCE_DIR "/qml/components")).toString();
+  out << "import QtQuick\nimport \"" << componentsImport << "\" as Components\n"
+      << "Item { width: 64; height: 64; Components.Theme { id: theme } Components.StableImage { objectName: \"stableImage\"; anchors.fill: parent; retryDelayMs: 150; maxRetries: 2 } }\n";
+  file.close();
+
+  QQuickView view;
+  view.setSource(QUrl::fromLocalFile(qmlPath));
+  view.show();
+  QVERIFY(view.status() == QQuickView::Ready);
+  QQuickItem *image = view.rootObject()->findChild<QQuickItem *>(QStringLiteral("stableImage"));
+  QVERIFY(image);
+  const QString oldUrl = QStringLiteral("http://127.0.0.1:%1/old.png").arg(server.serverPort());
+  const QString newUrl = QStringLiteral("http://127.0.0.1:%1/new.png").arg(server.serverPort());
+  image->setProperty("source", oldUrl);
+  QTRY_COMPARE_WITH_TIMEOUT(image->property("retryCount").toInt(), 1, 1000);
+  image->setProperty("source", newUrl);
+  QTRY_VERIFY_WITH_TIMEOUT(image->property("ready").toBool(), 1000);
+  QTest::qWait(220);
+  drainEvents(20);
+  QCOMPARE(image->property("source").toString(), newUrl);
+  QCOMPARE(image->property("effectiveSource").toString(), newUrl);
+  QCOMPARE(image->property("retryCount").toInt(), 0);
+  QVERIFY(image->property("ready").toBool());
 }
 
 int main(int argc, char **argv)

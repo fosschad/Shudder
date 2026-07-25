@@ -125,11 +125,15 @@ Frame {
             ListView {
                 id: list
                 objectName: "chatMessageList"
-                property bool followTail: true
+                readonly property int followingLive: 0
+                readonly property int readingHistory: 1
+                readonly property int programmaticScroll: 2
+                readonly property int modelReset: 3
+                property int followState: followingLive
+                readonly property bool followTail: followState !== readingHistory
                 property bool pendingTailJump: false
                 property int pendingMessageCount: 0
-                property string jumpChannel: ""
-                property int previousCount: 0
+                property int correctionPassesRemaining: 0
 
                 anchors.fill: parent
                 model: chatModel
@@ -147,51 +151,76 @@ Frame {
                     return Number.isFinite(Number(value))
                 }
 
-                function clampedContentY(value) {
-                    if (!finite(value)) return originY
-                    const bottom = bottomY()
-                    if (!finite(bottom)) return originY
-                    return Math.min(bottom, Math.max(originY, value))
-                }
-
                 function nearEnd() {
                     return contentHeight <= height || contentY >= bottomY() - 24
                 }
 
-                function cancelPendingTailJump() {
+                function cancelTailMaintenance() {
                     pendingTailJump = false
+                    correctionPassesRemaining = 0
                     tailJumpTimer.stop()
                 }
 
-                function jumpToPresent() {
-                    jumpChannel = chatModel.channel
-                    followTail = true
-                    if (pendingTailJump) return
+                function requestTailMaintenance(passes) {
+                    if (followState === readingHistory) return
+                    if (followState !== modelReset) followState = programmaticScroll
                     pendingTailJump = true
+                    correctionPassesRemaining = Math.max(correctionPassesRemaining, passes === undefined ? 2 : passes)
+                    if (width <= 0 || height <= 0 || !visible) return
+                    if (tailJumpTimer.running) return
                     tailJumpTimer.restart()
+                }
+
+                function jumpToPresent() {
+                    followState = programmaticScroll
+                    pendingMessageCount = 0
+                    requestTailMaintenance(2)
+                }
+
+                function beginUserScroll() {
+                    if (followState === modelReset) return
+                    followState = readingHistory
+                    cancelTailMaintenance()
+                }
+
+                function settleUserScroll() {
+                    if (followState !== readingHistory || !nearEnd()) return
+                    followState = programmaticScroll
+                    pendingMessageCount = 0
+                    requestTailMaintenance(2)
+                }
+
+                function handleUserWheel() {
+                    beginUserScroll()
+                    Qt.callLater(settleUserScroll)
                 }
 
                 function applyPendingTailJump() {
                     if (!pendingTailJump) return
-                    if (jumpChannel !== chatModel.channel) {
-                        cancelPendingTailJump()
+                    if (followState === readingHistory) {
+                        cancelTailMaintenance()
                         return
                     }
                     if (count <= 0) {
                         pendingTailJump = false
                         pendingMessageCount = 0
+                        correctionPassesRemaining = 0
+                        followState = followingLive
                         return
                     }
-                    if (width <= 0 || height <= 0) {
-                        pendingTailJump = false
-                        return
-                    }
+                    if (width <= 0 || height <= 0 || !visible) return
+                    followState = programmaticScroll
                     if (moving || flicking) cancelFlick()
-                    const clampedY = clampedContentY(bottomY())
-                    if (finite(clampedY) && Math.abs(contentY - clampedY) > 1) contentY = clampedY
-                    followTail = true
+                    forceLayout()
+                    positionViewAtEnd()
                     pendingMessageCount = 0
+                    correctionPassesRemaining -= 1
+                    if (correctionPassesRemaining > 0) {
+                        tailJumpTimer.restart()
+                        return
+                    }
                     pendingTailJump = false
+                    followState = followingLive
                 }
 
                 Timer {
@@ -230,6 +259,7 @@ Frame {
                     }
                     Button {
                         id: inlineReplyButton
+                        objectName: "chatInlineReplyButton"
                         anchors.top: parent.top
                         anchors.right: parent.right
                         anchors.topMargin: 3
@@ -239,7 +269,8 @@ Frame {
                         z: 5
                         visible: !notice && messageId.length > 0
                         opacity: messageDelegate.replyActionShown ? 1 : 0
-                        enabled: opacity > 0.05
+                        enabled: composer.enabled
+                        activeFocusOnTab: true
                         padding: 0
                         Accessible.name: "Reply"
                         ToolTip.visible: hovered
@@ -303,25 +334,11 @@ Frame {
                                 model: notice ? [] : badgeAssets
                                 delegate: Item {
                                     objectName: "chatBadgeCell"
-                                    property string badgeImageUrl: String(modelData.imageUrl || "")
-                                    property bool badgeImageActive: false
-                                    property bool badgeImageReady: false
+                                    readonly property string badgeImageUrl: String(modelData.imageUrl || "")
                                     readonly property string badgeHoverText: "Badge: " + String(modelData.title || modelData.key)
                                     width: badgeImageUrl.length > 0 ? 18 : 0
                                     height: 18
                                     visible: badgeImageUrl.length > 0
-                                    onBadgeImageUrlChanged: {
-                                        badgeImageActive = false
-                                        badgeImageReady = false
-                                        if (badgeImageUrl.length > 0) badgeImageReset.restart()
-                                    }
-                                    Component.onCompleted: if (badgeImageUrl.length > 0) badgeImageReset.restart()
-                                    Timer {
-                                        id: badgeImageReset
-                                        interval: 0
-                                        repeat: false
-                                        onTriggered: badgeImageActive = badgeImageUrl.length > 0
-                                    }
                                     MouseArea {
                                         id: badgeMouse
                                         anchors.fill: parent
@@ -333,30 +350,22 @@ Frame {
                                     Rectangle {
                                         anchors.fill: parent
                                         radius: 3
-                                        visible: badgeMouse.containsMouse && badgeImageReady
+                                        visible: badgeMouse.containsMouse && badgeImage.ready
                                         color: theme.surfaceHover
                                         border.color: theme.borderStrong
                                     }
-                                    Loader {
-                                        objectName: "chatBadgeImageLoader"
+                                    Components.StableImage {
+                                        id: badgeImage
+                                        objectName: "chatBadgeImage"
                                         anchors.centerIn: parent
                                         width: 18
                                         height: 18
-                                        active: badgeImageActive
-                                        sourceComponent: Image {
-                                            width: 18
-                                            height: 18
-                                            fillMode: Image.PreserveAspectFit
-                                            source: badgeImageUrl
-                                            asynchronous: true
-                                            cache: true
-                                            mipmap: true
-                                            sourceSize.width: 36
-                                            sourceSize.height: 36
-                                            visible: badgeImageReady
-                                            onStatusChanged: badgeImageReady = status === Image.Ready && source.toString() === badgeImageUrl
-                                            Component.onCompleted: badgeImageReady = status === Image.Ready && source.toString() === badgeImageUrl
-                                        }
+                                        source: badgeImageUrl
+                                        retainWhileLoading: false
+                                        fillMode: Image.PreserveAspectFit
+                                        fill: theme.transparent
+                                        preferredSourceWidth: 36
+                                        preferredSourceHeight: 36
                                     }
                                 }
                             }
@@ -397,7 +406,7 @@ Frame {
                                         anchors.centerIn: parent
                                         visible: parent.emotePart
                                         source: parent.emotePart ? String(modelData.imageUrl || "") : ""
-                                        retainWhileLoading: true
+                                        retainWhileLoading: false
                                         width: preferences.get("chatEmoteSize")
                                         height: preferences.get("chatEmoteSize")
                                         fillMode: Image.PreserveAspectFit
@@ -439,59 +448,67 @@ Frame {
                         color: chatScrollBar.pressed ? theme.textSoft : (chatScrollBar.hovered ? theme.textMuted : theme.borderStrong)
                     }
                     background: Rectangle { color: theme.transparent }
+                    onPressedChanged: {
+                        if (pressed) list.beginUserScroll()
+                        else list.settleUserScroll()
+                    }
                 }
 
-                Component.onCompleted: jumpToPresent()
-                Component.onDestruction: cancelPendingTailJump()
+                WheelHandler {
+                    target: null
+                    onWheel: function(event) {
+                        list.handleUserWheel()
+                        event.accepted = false
+                    }
+                }
+
+                Component.onCompleted: requestTailMaintenance(2)
+                Component.onDestruction: cancelTailMaintenance()
                 onMovementStarted: {
-                    followTail = false
-                    cancelPendingTailJump()
+                    if (followState !== programmaticScroll && followState !== modelReset) beginUserScroll()
                 }
-                onMovementEnded: {
-                    followTail = nearEnd()
-                    if (followTail) {
-                        pendingMessageCount = 0
-                        jumpToPresent()
-                    }
-                }
-                onCountChanged: {
-                    const delta = count - previousCount
-                    if (followTail) jumpToPresent()
-                    else if (delta > 0) pendingMessageCount += delta
-                    if (count <= 0) {
-                        followTail = true
-                        pendingMessageCount = 0
-                        cancelPendingTailJump()
-                    }
-                    previousCount = count
-                }
+                onDraggingChanged: if (dragging) beginUserScroll()
+                onMovementEnded: settleUserScroll()
+                onContentHeightChanged: requestTailMaintenance(2)
+                onOriginYChanged: requestTailMaintenance(2)
+                onWidthChanged: requestTailMaintenance(2)
+                onHeightChanged: requestTailMaintenance(2)
+                onVisibleChanged: if (visible) requestTailMaintenance(2)
                 Connections {
                     target: chatModel
                     function onModelAboutToBeReset() {
-                        list.followTail = true
+                        list.followState = list.modelReset
                         list.pendingMessageCount = 0
-                        list.cancelPendingTailJump()
+                        list.cancelTailMaintenance()
                     }
-                    function onRowsAboutToBeRemoved() {
-                        list.cancelPendingTailJump()
+                    function onModelReset() {
+                        list.followState = list.programmaticScroll
+                        list.requestTailMaintenance(2)
+                    }
+                    function onRowsInserted(parent, first, last) {
+                        if (list.followState === list.readingHistory) list.pendingMessageCount += last - first + 1
+                        else list.requestTailMaintenance(2)
+                    }
+                    function onRowsRemoved() {
+                        if (list.followState !== list.readingHistory) list.requestTailMaintenance(2)
                     }
                     function onChannelChanged() {
-                        list.followTail = true
+                        list.followState = list.programmaticScroll
                         list.pendingMessageCount = 0
-                        list.cancelPendingTailJump()
-                        list.jumpToPresent()
+                        list.requestTailMaintenance(2)
                     }
                 }
             }
 
             Components.GlassButton {
+                objectName: "chatJumpToPresentButton"
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 12
                 z: 2
                 text: "Jump to present"
                 prominent: true
-                visible: (!list.followTail && !list.nearEnd()) || list.pendingMessageCount > 0
+                visible: list.followState === list.readingHistory && !list.nearEnd()
                 onClicked: list.jumpToPresent()
             }
         }
@@ -759,9 +776,9 @@ Frame {
                                                     width: emoteFlow.tileWidth
                                                     height: 64
                                                     radius: theme.radiusSm
-                                                    color: emoteMouse.containsMouse ? theme.surfaceHover : theme.surface
-                                                    border.color: emoteMouse.containsMouse ? theme.borderStrong : theme.border
-                                                    MouseArea { id: emoteMouse; anchors.fill: parent; hoverEnabled: true; onClicked: composer.insertEmote(modelData) }
+                                                    color: pickerEmoteMouse.containsMouse ? theme.surfaceHover : theme.surface
+                                                    border.color: pickerEmoteMouse.containsMouse ? theme.borderStrong : theme.border
+                                                    MouseArea { id: pickerEmoteMouse; anchors.fill: parent; hoverEnabled: true; onClicked: composer.insertEmote(modelData) }
                                                     Column {
                                                         anchors.fill: parent
                                                         anchors.margins: 6
