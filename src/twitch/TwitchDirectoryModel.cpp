@@ -117,6 +117,7 @@ void TwitchDirectoryModel::setClientId(const QString &clientId)
   const QString trimmed = clientId.trimmed();
   if (m_clientId == trimmed) return;
   m_clientId = trimmed;
+  invalidateRequests(true);
   emit clientIdChanged();
 }
 
@@ -125,9 +126,7 @@ void TwitchDirectoryModel::setAccessToken(const QString &accessToken)
   const QString trimmed = accessToken.trimmed();
   if (m_accessToken == trimmed) return;
   m_accessToken = trimmed;
-  ++m_requestGeneration;
-  ++m_searchGeneration;
-  ++m_categoryViewerGeneration;
+  invalidateRequests(true);
   emit accessTokenChanged();
 }
 
@@ -190,9 +189,7 @@ void TwitchDirectoryModel::search(const QString &query)
   setError({});
   setPageTitle(m_searchTitle);
   setBusy(true);
-  beginResetModel();
-  m_items.clear();
-  endResetModel();
+  resetRowsForRequest();
 
   if (exactLoginQuery) requestSearchPart(QStringLiteral("/streams?first=8&user_login=%1").arg(encoded), token, generation);
   requestSearchPart(QStringLiteral("/search/categories?first=18&query=%1").arg(encoded), token, generation);
@@ -256,11 +253,39 @@ void TwitchDirectoryModel::setHasMore(bool hasMore)
   emit hasMoreChanged();
 }
 
-void TwitchDirectoryModel::clearItems(QString title)
+void TwitchDirectoryModel::invalidateRequests(bool clearCache)
 {
   ++m_requestGeneration;
   ++m_searchGeneration;
   ++m_categoryViewerGeneration;
+  m_pendingPath.clear();
+  m_pendingSearchRequests = 0;
+  m_pendingCategoryViewerRequests = 0;
+  m_pendingCategoryViewerCounts.clear();
+  m_searchItems.clear();
+  m_after.clear();
+  setHasMore(false);
+  if (clearCache) m_pageCache.clear();
+  for (QNetworkReply *reply : findChildren<QNetworkReply *>()) reply->abort();
+  setBusy(false);
+}
+
+void TwitchDirectoryModel::resetRowsForRequest()
+{
+  m_after.clear();
+  setHasMore(false);
+  if (m_items.isEmpty()) return;
+  beginResetModel();
+  m_items.clear();
+  endResetModel();
+  emit countChanged();
+  emit itemsChanged();
+}
+
+void TwitchDirectoryModel::clearItems(QString title)
+{
+  invalidateRequests(true);
+  m_lastPath.clear();
   setError({});
   setPageTitle(std::move(title));
   replaceItems({}, {});
@@ -384,12 +409,7 @@ void TwitchDirectoryModel::request(const QString &path, const QString &title, bo
       preserveRows = true;
     } else if (clearBeforeRequest && !m_items.isEmpty()) {
       setPageTitle(title);
-      beginResetModel();
-      m_items.clear();
-      endResetModel();
-      emit itemsChanged();
-      m_after.clear();
-      setHasMore(false);
+      resetRowsForRequest();
     } else if (!preserveRows || m_items.isEmpty()) {
       setPageTitle(title);
     }

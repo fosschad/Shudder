@@ -130,6 +130,8 @@ private:
   void setError(QString error);
   void setPageTitle(QString title);
   void setHasMore(bool hasMore);
+  void invalidateRequests(bool clearCache);
+  void resetRowsForRequest();
   void clearItems(QString title);
   void replaceItems(QVector<Item> items, QString cursor);
   void updateItems(QVector<Item> items, QString cursor);
@@ -147,4 +149,6 @@ private:
   [[nodiscard]] static QString resizedTwitchImage(QString url, int width, int height);
   [[nodiscard]] static QString uptimeFromStartedAt(const QString &startedAt);
   [[nodiscard]] QVariantMap toMap(const Item &item) const;
+
+  friend class DirectoryModelTests;
 };

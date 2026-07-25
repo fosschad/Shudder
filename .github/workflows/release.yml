@@ -26,8 +26,8 @@ jobs:
       - name: Validate tag
         run: |
           version="${GITHUB_REF_NAME#v}"
-          grep -q "project(Shudder" CMakeLists.txt
-          grep -q "VERSION $version" CMakeLists.txt
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          grep -qx "  VERSION $version" CMakeLists.txt
 
       - name: Configure
         run: |
@@ -44,13 +44,19 @@ jobs:
 
       - name: QML lint
         run: cmake --build build --target all_qmllint
+
+      - name: Validate desktop metadata
+        run: |
+          desktop-file-validate build/packaging/*.desktop
+          appstreamcli validate --no-net build/packaging/*.metainfo.xml
+
       - name: Package
         run: cmake --build build --target package
 
       - name: Prepare release payload
         run: |
           mkdir -p release
-          cp build/*.deb build/*.rpm build/*.tar.gz release/ 2>/dev/null || true
+          cp build/*.deb build/*.rpm build/*.tar.gz release/
           cp CHANGELOG.md release/release-notes.md
           (cd release && sha256sum * > SHA256SUMS)
 
@@ -62,8 +68,39 @@ jobs:
           retention-days: 2
           path: release/*
 
+  sanitizers:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Setup native Linux build
+        uses: ./.github/actions/setup-native-linux
+
+      - name: Configure ASan UBSan
+        run: |
+          cmake -S . -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DSHUDDER_ENABLE_SANITIZERS=ON \
+            -DSHUDDER_GITHUB_OWNER=fosschad \
+            -DSHUDDER_GITHUB_REPOSITORY=Shudder
+
+      - name: Build ASan UBSan
+        run: cmake --build build-asan --parallel
+
+      - name: Run ASan UBSan tests
+        env:
+          ASAN_OPTIONS: abort_on_error=1:detect_leaks=1:strict_init_order=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build-asan --output-on-failure
+
   publish:
-    needs: build-linux
+    needs: [build-linux, sanitizers]
     runs-on: ubuntu-24.04
     permissions:
       actions: read

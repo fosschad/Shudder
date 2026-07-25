@@ -2,6 +2,23 @@
 
 All notable changes to Shudder will be documented in this file.
 
+## [0.1.1] - 2026-07-25
+
+### Fixed
+
+- Made live chat following deterministic across new messages, model resets, resizing, and manual history reading.
+- Stabilized badge resolution across channels and prevented stale image requests from replacing current artwork.
+- Unified local and server-confirmed chat username colors without transient white fallbacks.
+- Prevented cancelled, replaced, timed-out, or crashed Streamlink processes from retrying or updating stale playback state.
+- Recovered directory browsing cleanly after Twitch credential changes and isolated credential-scoped caches.
+- Rejected stale Device Code callbacks and preserved valid tokens after malformed refresh responses.
+- Corrected fragmented loopback player requests, moderation role updates, and IRC tag decoding.
+
+### Changed
+
+- Expanded chat, playback, authentication, networking, image lifecycle, and packaging regression coverage.
+- Improved keyboard shortcut scoping, settings accessibility, installation metadata, and release validation.
+
 ## [0.1.0] - 2026-07-22
 
 ### Added

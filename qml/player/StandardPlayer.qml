@@ -18,7 +18,6 @@ Item {
         settings.localStorageEnabled: false
         settings.localContentCanAccessFileUrls: false
         settings.localContentCanAccessRemoteUrls: false
-        onNewWindowRequested: function(request) { request.action = WebEngineNewWindowRequest.IgnoreRequest }
         onCertificateError: function(error) { error.rejectCertificate() }
         onLoadingChanged: function(loadRequest) {
             if (loadRequest.status === WebEngineLoadingInfo.LoadFailedStatus) console.warn("Standard player load failed", loadRequest.errorString)

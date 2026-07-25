@@ -2,6 +2,9 @@
 
 #include <QObject>
 #include <QString>
+#include <QThread>
+
+#include <functional>
 
 class ShudderSecretStore : public QObject {
   Q_OBJECT
@@ -9,6 +12,7 @@ class ShudderSecretStore : public QObject {
 
 public:
   explicit ShudderSecretStore(QObject *parent = nullptr);
+  ~ShudderSecretStore() override;
   [[nodiscard]] bool available() const;
 
   Q_INVOKABLE bool store(const QString &kind, const QString &secret);
@@ -21,5 +25,16 @@ signals:
   void error(const QString &message) const;
 
 private:
+  using StoreFunction = std::function<bool(const QString &, const QString &, QString *)>;
+  using LoadFunction = std::function<QString(const QString &, QString *)>;
+  using ClearFunction = std::function<bool(const QString &, QString *)>;
+
   bool m_available = false;
+  QThread m_workerThread;
+  QObject *m_workerContext = nullptr;
+  StoreFunction m_storeFunction;
+  LoadFunction m_loadFunction;
+  ClearFunction m_clearFunction;
+
+  friend class SecretStoreTests;
 };

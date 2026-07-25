@@ -7,6 +7,7 @@ import "../components" as Components
 Drawer {
     id: drawer
     signal connectRequested()
+    signal aboutRequested()
     Components.Theme { id: theme }
 
     edge: Qt.RightEdge
@@ -36,7 +37,7 @@ Drawer {
                 radius: theme.radiusLg
                 color: theme.panelRaised
                 border.color: theme.border
-                height: accountColumn.implicitHeight + 28
+                Layout.preferredHeight: accountColumn.implicitHeight + 28
                 ColumnLayout {
                     id: accountColumn
                     anchors.fill: parent
@@ -98,13 +99,14 @@ Drawer {
 
             Label { Layout.topMargin: 10; text: "Playback"; color: theme.textMuted; font.bold: true; font.letterSpacing: 1.1 }
             ComboBox {
+                id: playerModeBox
                 Layout.fillWidth: true
                 Layout.preferredHeight: 38
                 model: ["native", "standard"]
                 currentIndex: model.indexOf(preferences.get("playerMode"))
                 onActivated: preferences.set("playerMode", currentText)
                 Accessible.name: "Playback mode"
-                contentItem: Text { text: parent.displayText; color: theme.text; verticalAlignment: Text.AlignVCenter; leftPadding: 12 }
+                contentItem: Text { text: playerModeBox.displayText; color: theme.text; verticalAlignment: Text.AlignVCenter; leftPadding: 12 }
                 background: Rectangle { radius: theme.radiusSm; color: theme.field; border.color: parent.activeFocus ? theme.borderStrong : theme.border }
             }
             CheckBox { text: "Dynamic audio compression"; checked: preferences.get("audioCompression"); onToggled: preferences.set("audioCompression", checked) }
@@ -113,6 +115,8 @@ Drawer {
             Components.MonoSlider { id: chatFontSlider; Layout.fillWidth: true; from: 14; to: 25; stepSize: 1; value: preferences.get("chatFontSize"); onMoved: preferences.set("chatFontSize", Math.round(value)) }
             Label { text: "Emote size: " + Math.round(emoteSizeSlider.value) + " px"; color: theme.textSoft }
             Components.MonoSlider { id: emoteSizeSlider; Layout.fillWidth: true; from: 18; to: 48; stepSize: 1; value: preferences.get("chatEmoteSize"); onMoved: preferences.set("chatEmoteSize", Math.round(value)) }
+
+            Components.GlassButton { Layout.fillWidth: true; text: "About Shudder"; quiet: true; onClicked: drawer.aboutRequested() }
 
         }
     }
@@ -167,7 +171,6 @@ Drawer {
                 settings.javascriptCanOpenWindows: false
                 settings.localContentCanAccessFileUrls: false
                 settings.localContentCanAccessRemoteUrls: false
-                onNewWindowRequested: function(request) { request.action = WebEngineNewWindowRequest.IgnoreRequest }
                 onCertificateError: function(error) { error.rejectCertificate() }
             }
         }

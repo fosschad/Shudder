@@ -5,6 +5,7 @@ Button {
     id: control
     property bool prominent: false
     property string iconName: text
+    Accessible.name: text.length > 0 ? text : iconName
 
     Theme { id: theme }
 

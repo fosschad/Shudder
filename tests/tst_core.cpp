@@ -16,6 +16,7 @@ class ShudderCoreTests : public QObject {
 
 private slots:
   void appIdentityIsShudder();
+  void releaseMetadataIsConsistent();
   void chatParserHandlesActionRepliesAndModeration();
   void chatParserPreservesTrailingTextAndUnescapesOnce();
   void preferencesValidateCompatibleValues();
@@ -33,6 +34,29 @@ void ShudderCoreTests::appIdentityIsShudder()
   QCOMPARE(QStringLiteral(SHUDDER_EXECUTABLE_NAME), QStringLiteral("shudder"));
   QVERIFY(QStringLiteral(SHUDDER_APP_ID).startsWith(QStringLiteral("io.github.")));
   QVERIFY(!QStringLiteral(SHUDDER_APP_ID).contains(QStringLiteral("ACTUAL_FORK_OWNER")));
+  QCOMPARE(QStringLiteral(SHUDDER_VERSION), QStringLiteral("0.1.1"));
+}
+
+void ShudderCoreTests::releaseMetadataIsConsistent()
+{
+  QFile changelog(QStringLiteral(SHUDDER_SOURCE_DIR "/CHANGELOG.md"));
+  QVERIFY(changelog.open(QIODevice::ReadOnly));
+  const QByteArray changelogText = changelog.readAll();
+  QVERIFY(changelogText.contains("## [0.1.1] - 2026-07-25"));
+
+  QFile metadata(QStringLiteral(SHUDDER_BINARY_DIR "/packaging/" SHUDDER_APP_ID ".metainfo.xml"));
+  QVERIFY(metadata.open(QIODevice::ReadOnly));
+  const QByteArray metadataText = metadata.readAll();
+  QVERIFY(metadataText.contains("<release version=\"0.1.1\" date=\"2026-07-25\">"));
+  QVERIFY(metadataText.contains("<release version=\"0.1.0\" date=\"2026-07-22\">"));
+
+  QFile installRules(QStringLiteral(SHUDDER_SOURCE_DIR "/src/CMakeLists.txt"));
+  QVERIFY(installRules.open(QIODevice::ReadOnly));
+  QVERIFY(!installRules.readAll().contains("packaging/appimage/AppRun DESTINATION"));
+
+  QFile rootBuild(QStringLiteral(SHUDDER_SOURCE_DIR "/CMakeLists.txt"));
+  QVERIFY(rootBuild.open(QIODevice::ReadOnly));
+  QVERIFY(rootBuild.readAll().contains("install(FILES LICENSE"));
 }
 
 void ShudderCoreTests::chatParserHandlesActionRepliesAndModeration()

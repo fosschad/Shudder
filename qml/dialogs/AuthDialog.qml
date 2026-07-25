@@ -41,7 +41,7 @@ Drawer {
                 radius: theme.radiusLg
                 color: theme.panelRaised
                 border.color: theme.border
-                height: accountCard.implicitHeight + 32
+                Layout.preferredHeight: accountCard.implicitHeight + 32
 
                 RowLayout {
                     id: accountCard
@@ -87,7 +87,7 @@ Drawer {
                 radius: theme.radiusLg
                 color: theme.field
                 border.color: theme.border
-                height: missingClientLabel.implicitHeight + 28
+                Layout.preferredHeight: missingClientLabel.implicitHeight + 28
                 Label {
                     id: missingClientLabel
                     anchors.fill: parent
@@ -105,7 +105,7 @@ Drawer {
                 radius: theme.radiusLg
                 color: theme.field
                 border.color: theme.borderStrong
-                height: codeColumn.implicitHeight + 32
+                Layout.preferredHeight: codeColumn.implicitHeight + 32
 
                 ColumnLayout {
                     id: codeColumn
@@ -144,7 +144,7 @@ Drawer {
                 radius: theme.radiusLg
                 color: theme.field
                 border.color: theme.border
-                height: statusColumn.implicitHeight + 28
+                Layout.preferredHeight: statusColumn.implicitHeight + 28
 
                 ColumnLayout {
                     id: statusColumn

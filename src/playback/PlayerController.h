@@ -116,4 +116,6 @@ private:
   void updateLiveDuration();
   [[nodiscard]] static QString durationText(const QDateTime &startedAt);
   void setStatus(QString status);
+
+  friend class PlaybackProcessTests;
 };

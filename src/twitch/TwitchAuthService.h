@@ -9,6 +9,8 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <optional>
+
 class TwitchAuthService : public QObject {
   Q_OBJECT
   Q_PROPERTY(QString clientId READ clientId WRITE setClientId NOTIFY clientIdChanged)
@@ -60,6 +62,8 @@ signals:
   void followStateChanged(const QString &broadcasterId);
 
 private:
+  enum class AuthTimerAction { Refresh, Validate };
+
   struct TokenSet {
     QString accessToken;
     QString refreshToken;
@@ -84,6 +88,9 @@ private:
   TokenSet m_token;
   QSet<QString> m_followedBroadcasterIds;
   int m_authGeneration = 0;
+  int m_authRetryDelayMs = 60000;
+  quint64 m_deviceGeneration = 0;
+  AuthTimerAction m_authTimerAction = AuthTimerAction::Refresh;
   bool m_pollInFlight = false;
   bool m_busy = false;
 
@@ -91,15 +98,21 @@ private:
   void setBusy(bool busy);
   void setStatus(QString status);
   void clearDeviceAuthorization();
+  bool applyDeviceCodePayload(const QByteArray &payload, quint64 generation, const QString &clientId);
   void pollDeviceToken();
   void validateToken();
   void requestUserProfile();
   void refreshToken();
+  void scheduleAuthRetry(AuthTimerAction action);
   void storeTokenAsync();
   void loadStoredToken();
   void applyToken(TokenSet token);
+  [[nodiscard]] static std::optional<TokenSet> tokenFromRefreshPayload(const QByteArray &payload, const QString &currentRefreshToken);
   [[nodiscard]] QNetworkRequest helixRequest(const QUrl &url) const;
   [[nodiscard]] QNetworkRequest oauthRequest(const QUrl &url) const;
+  [[nodiscard]] static bool isPermanentRefreshFailure(int httpStatus);
   [[nodiscard]] static QStringList scopes();
   [[nodiscard]] static QString formEncode(const QUrlQuery &query);
+
+  friend class AuthServiceTests;
 };

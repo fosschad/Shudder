@@ -16,6 +16,7 @@ class StreamlinkResolver : public QObject {
 
 public:
   explicit StreamlinkResolver(QObject *parent = nullptr);
+  ~StreamlinkResolver() override;
 
   [[nodiscard]] QString streamlinkPath() const;
   [[nodiscard]] QString status() const;
@@ -51,8 +52,14 @@ private:
   QString m_qualityChannel;
   QString m_qualityAccessToken;
   int m_qualityAttempt = 0;
-  bool m_cancelled = false;
   bool m_enhancedAttempt = false;
+  quint64 m_processGeneration = 0;
+  quint64 m_processActiveGeneration = 0;
+  quint64 m_qualityGeneration = 0;
+  quint64 m_qualityActiveGeneration = 0;
+  bool m_resolveRestartPending = false;
+  bool m_qualityRestartPending = false;
+  bool m_destroying = false;
 
   void startProcess(bool enhanced);
   void startQualityProcess(int attempt);
@@ -60,4 +67,6 @@ private:
   [[nodiscard]] static std::unique_ptr<QTemporaryFile> createAuthConfig(const QString &accessToken);
   static void cleanupConfig(std::unique_ptr<QTemporaryFile> &config);
   void setStatus(QString status);
+
+  friend class PlaybackProcessTests;
 };

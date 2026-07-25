@@ -21,9 +21,17 @@ StreamlinkResolver::StreamlinkResolver(QObject *parent) : QObject(parent), m_str
   connect(&m_process, &QProcess::finished, this, [this](int exitCode, QProcess::ExitStatus exitStatus) {
     m_processTimeout.stop();
     cleanupConfig(m_processConfig);
-    if (m_cancelled) return;
+    const quint64 finishedGeneration = m_processActiveGeneration;
     const QString out = QString::fromUtf8(m_process.readAllStandardOutput()).trimmed();
     const QString err = UrlUtils::redactedForLog(QString::fromUtf8(m_process.readAllStandardError()).trimmed());
+    if (m_destroying) return;
+    if (finishedGeneration != m_processGeneration) {
+      if (m_resolveRestartPending) {
+        m_resolveRestartPending = false;
+        startProcess(true);
+      }
+      return;
+    }
     if (exitStatus == QProcess::NormalExit && exitCode == 0 && out.startsWith(QStringLiteral("http"))) {
       setStatus(tr("Native stream URL resolved."));
       emit resolved(m_channel, out.split(QLatin1Char('\n')).first().trimmed());
@@ -41,8 +49,17 @@ StreamlinkResolver::StreamlinkResolver(QObject *parent) : QObject(parent), m_str
   connect(&m_qualityProcess, &QProcess::finished, this, [this](int exitCode, QProcess::ExitStatus exitStatus) {
     m_qualityTimeout.stop();
     cleanupConfig(m_qualityConfig);
+    const quint64 finishedGeneration = m_qualityActiveGeneration;
     const QString out = QString::fromUtf8(m_qualityProcess.readAllStandardOutput()).trimmed();
     const QString err = UrlUtils::redactedForLog(QString::fromUtf8(m_qualityProcess.readAllStandardError()).trimmed());
+    if (m_destroying) return;
+    if (finishedGeneration != m_qualityGeneration) {
+      if (m_qualityRestartPending) {
+        m_qualityRestartPending = false;
+        startQualityProcess(0);
+      }
+      return;
+    }
     if (exitStatus == QProcess::NormalExit && exitCode == 0) {
       const QStringList qualities = parseQualitiesJson(out.toUtf8());
       if (!qualities.isEmpty()) {
@@ -57,17 +74,48 @@ StreamlinkResolver::StreamlinkResolver(QObject *parent) : QObject(parent), m_str
     const QString message = err.isEmpty() ? tr("Streamlink could not list stream qualities.") : err.left(800);
     emit qualitiesFailed(m_qualityChannel, message);
   });
-  connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
+  connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+    if (error != QProcess::FailedToStart) return;
     m_processTimeout.stop();
     cleanupConfig(m_processConfig);
-    if (m_cancelled) return;
+    if (m_destroying) return;
+    if (m_processActiveGeneration != m_processGeneration) {
+      if (m_resolveRestartPending) {
+        const quint64 generation = m_processGeneration;
+        QTimer::singleShot(0, this, [this, generation]() {
+          if (m_destroying || generation != m_processGeneration || !m_resolveRestartPending || m_process.state() != QProcess::NotRunning) return;
+          m_resolveRestartPending = false;
+          startProcess(true);
+        });
+      }
+      return;
+    }
     const QString message = tr("Streamlink failed to start: %1").arg(m_process.errorString());
     setStatus(message);
     emit failed(m_channel, message);
   });
+  connect(&m_qualityProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+    if (error != QProcess::FailedToStart) return;
+    m_qualityTimeout.stop();
+    cleanupConfig(m_qualityConfig);
+    if (m_destroying) return;
+    if (m_qualityActiveGeneration != m_qualityGeneration) {
+      if (m_qualityRestartPending) {
+        const quint64 generation = m_qualityGeneration;
+        QTimer::singleShot(0, this, [this, generation]() {
+          if (m_destroying || generation != m_qualityGeneration || !m_qualityRestartPending || m_qualityProcess.state() != QProcess::NotRunning) return;
+          m_qualityRestartPending = false;
+          startQualityProcess(0);
+        });
+      }
+      return;
+    }
+    emit qualitiesFailed(m_qualityChannel, tr("Streamlink failed to start: %1").arg(m_qualityProcess.errorString()));
+  });
   connect(&m_processTimeout, &QTimer::timeout, this, [this]() {
     if (m_process.state() == QProcess::NotRunning) return;
-    m_cancelled = true;
+    ++m_processGeneration;
+    m_resolveRestartPending = false;
     m_process.kill();
     cleanupConfig(m_processConfig);
     const QString message = tr("Streamlink timed out while resolving this stream.");
@@ -76,10 +124,22 @@ StreamlinkResolver::StreamlinkResolver(QObject *parent) : QObject(parent), m_str
   });
   connect(&m_qualityTimeout, &QTimer::timeout, this, [this]() {
     if (m_qualityProcess.state() == QProcess::NotRunning) return;
+    ++m_qualityGeneration;
+    m_qualityRestartPending = false;
     m_qualityProcess.kill();
     cleanupConfig(m_qualityConfig);
     emit qualitiesFailed(m_qualityChannel, tr("Streamlink timed out while listing stream qualities."));
   });
+}
+
+StreamlinkResolver::~StreamlinkResolver()
+{
+  m_destroying = true;
+  cancel();
+  disconnect(&m_process, nullptr, this, nullptr);
+  disconnect(&m_qualityProcess, nullptr, this, nullptr);
+  if (m_process.state() != QProcess::NotRunning) m_process.waitForFinished(1000);
+  if (m_qualityProcess.state() != QProcess::NotRunning) m_qualityProcess.waitForFinished(1000);
 }
 
 QString StreamlinkResolver::streamlinkPath() const { return m_streamlinkPath; }
@@ -95,24 +155,25 @@ void StreamlinkResolver::resolve(const QString &channel, const QString &quality,
     emit failed(login, message);
     return;
   }
-  cancel();
-  if (m_process.state() != QProcess::NotRunning) {
-    const QString message = tr("Streamlink is still stopping. Try again in a moment.");
-    setStatus(message);
-    emit failed(login, message);
-    return;
-  }
-  m_cancelled = false;
+  ++m_processGeneration;
+  m_processTimeout.stop();
   m_channel = login;
   m_requestedQuality = quality.trimmed().isEmpty() ? QStringLiteral("source") : quality.trimmed().toLower();
   m_streamlinkQuality = streamlinkQualityArgument(m_requestedQuality);
   m_accessToken = accessToken.trimmed();
   setStatus(tr("Resolving %1 at %2 with Streamlink...").arg(login, m_requestedQuality));
+  if (m_process.state() != QProcess::NotRunning) {
+    m_resolveRestartPending = true;
+    m_process.kill();
+    return;
+  }
+  m_resolveRestartPending = false;
   startProcess(true);
 }
 
 void StreamlinkResolver::startProcess(bool enhanced)
 {
+  m_processActiveGeneration = m_processGeneration;
   m_enhancedAttempt = enhanced;
   cleanupConfig(m_processConfig);
   QStringList args;
@@ -134,17 +195,22 @@ void StreamlinkResolver::requestQualities(const QString &channel, const QString 
     emit qualitiesFailed(login, tr("Streamlink is unavailable. Install streamlink or set SHUDDER_STREAMLINK_PATH."));
     return;
   }
-  if (m_qualityProcess.state() != QProcess::NotRunning) {
-    m_qualityProcess.kill();
-    m_qualityProcess.waitForFinished(1000);
-  }
+  ++m_qualityGeneration;
+  m_qualityTimeout.stop();
   m_qualityChannel = login;
   m_qualityAccessToken = accessToken.trimmed();
+  if (m_qualityProcess.state() != QProcess::NotRunning) {
+    m_qualityRestartPending = true;
+    m_qualityProcess.kill();
+    return;
+  }
+  m_qualityRestartPending = false;
   startQualityProcess(0);
 }
 
 void StreamlinkResolver::startQualityProcess(int attempt)
 {
+  m_qualityActiveGeneration = m_qualityGeneration;
   m_qualityAttempt = attempt;
   cleanupConfig(m_qualityConfig);
   QStringList args;
@@ -188,17 +254,18 @@ void StreamlinkResolver::cleanupConfig(std::unique_ptr<QTemporaryFile> &config)
 
 void StreamlinkResolver::cancel()
 {
+  ++m_processGeneration;
+  ++m_qualityGeneration;
+  m_resolveRestartPending = false;
+  m_qualityRestartPending = false;
   m_processTimeout.stop();
   m_qualityTimeout.stop();
   if (m_process.state() != QProcess::NotRunning) {
-    m_cancelled = true;
     m_process.kill();
-    m_process.waitForFinished(1000);
   }
   cleanupConfig(m_processConfig);
   if (m_qualityProcess.state() != QProcess::NotRunning) {
     m_qualityProcess.kill();
-    m_qualityProcess.waitForFinished(1000);
   }
   cleanupConfig(m_qualityConfig);
 }

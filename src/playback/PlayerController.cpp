@@ -66,6 +66,7 @@ void PlayerController::setMode(const QString &mode)
     }
   }
   if (normalized == QLatin1String("standard")) {
+    m_waitingForQualities = false;
     m_streamlink.cancel();
     if (!m_nativeSource.isEmpty()) {
       m_nativeSource.clear();
@@ -109,8 +110,8 @@ void PlayerController::setWebsiteAccessToken(const QString &accessToken)
   if (!m_channel.isEmpty() && m_mode == QLatin1String("native")) {
     setStatus(trimmed.isEmpty() ? tr("Refreshing native qualities without Twitch website session...")
                                 : tr("Refreshing native qualities with Twitch website session..."));
-    requestNativeQualities();
     m_waitingForQualities = true;
+    requestNativeQualities();
   }
 }
 
@@ -198,8 +199,8 @@ void PlayerController::playChannel(const QVariantMap &item)
     m_qualityOptions.clear();
     emit qualityOptionsChanged();
   }
+  m_waitingForQualities = m_mode == QLatin1String("native");
   requestNativeQualities();
-  if (m_mode == QLatin1String("native")) m_waitingForQualities = true;
 }
 
 void PlayerController::updateFromItem(const QVariantMap &item)
@@ -245,6 +246,7 @@ void PlayerController::updateFromItem(const QVariantMap &item)
 void PlayerController::stop()
 {
   const int generation = ++m_stopGeneration;
+  m_waitingForQualities = false;
   m_streamlink.cancel();
   const bool standardChanged = !m_standardUrl.isEmpty();
   const bool nativeChanged = !m_nativeSource.isEmpty();
@@ -355,6 +357,7 @@ void PlayerController::applyAvailableQualities(const QStringList &qualities)
 
 QString PlayerController::effectiveQualityForResolve() const
 {
+  if (m_autoQuality) return m_qualityOptions.isEmpty() ? QStringLiteral("best") : m_qualityOptions.first();
   if (!m_quality.isEmpty()) return m_quality;
   if (!m_qualityOptions.isEmpty()) return m_qualityOptions.first();
   return QStringLiteral("best");

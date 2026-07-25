@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(Shudder
-  VERSION 0.1.0
+  VERSION 0.1.1
   DESCRIPTION "Native Linux Twitch desktop client"
   HOMEPAGE_URL "https://github.com/fosschad/Shudder"
   LANGUAGES CXX
@@ -90,6 +90,7 @@ foreach(_size 16 24 32 48 64 128 256 512)
     DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/${_size}x${_size}/apps"
     RENAME "${SHUDDER_APP_ID}.svg")
 endforeach()
+install(FILES LICENSE DESTINATION "${CMAKE_INSTALL_DOCDIR}")
 
 configure_file(packaging/linux/shudder.desktop.in "${CMAKE_CURRENT_BINARY_DIR}/packaging/${SHUDDER_APP_ID}.desktop" @ONLY)
 configure_file(packaging/linux/shudder.metainfo.xml.in "${CMAKE_CURRENT_BINARY_DIR}/packaging/${SHUDDER_APP_ID}.metainfo.xml" @ONLY)

@@ -5,6 +5,8 @@ on:
     branches:
       - linux-native-wayland
       - main
+    tags:
+      - "v*"
   pull_request:
   workflow_dispatch:
 
@@ -41,6 +43,12 @@ jobs:
 
       - name: QML lint
         run: cmake --build build --target all_qmllint
+
+      - name: Validate desktop metadata
+        run: |
+          desktop-file-validate build/packaging/*.desktop
+          appstreamcli validate --no-net build/packaging/*.metainfo.xml
+
       - name: Wayland smoke test
         run: |
           runtime_dir="$(mktemp -d)"
@@ -77,7 +85,7 @@ jobs:
       - name: Generate checksum manifest
         run: |
           mkdir -p artifacts
-          cp build/*.deb build/*.rpm build/*.tar.gz artifacts/ 2>/dev/null || true
+          cp build/*.deb build/*.rpm build/*.tar.gz artifacts/
           cd artifacts
           sha256sum * > SHA256SUMS
 

@@ -25,6 +25,7 @@ ApplicationWindow {
     property bool playerFullscreen: false
     property bool currentFollowed: false
     property bool suppressGridHover: false
+    readonly property bool textInputFocused: activeFocusItem instanceof TextInput || activeFocusItem instanceof TextEdit
     readonly property var activeGridModel: section === "home" ? homeModel : directoryModel
     readonly property bool categoryGrid: section === "browse" && directoryModel.pageTitle === "Popular Categories"
     readonly property bool categoryStreams: section === "browse" && authService.signedIn && !categoryGrid && directoryModel.pageTitle.length > 0 && directoryModel.pageTitle !== "Live Channels" && directoryModel.pageTitle.indexOf("Search:") !== 0
@@ -244,9 +245,9 @@ ApplicationWindow {
     onVisibilityChanged: if (visibility !== Window.FullScreen && playerFullscreen) fullscreenRestoreTimer.restart()
 
     Shortcut { sequence: "F11"; onActivated: root.setPlayerFullscreen(!(root.playerFullscreen || root.visibility === Window.FullScreen)) }
-    Shortcut { sequence: "Escape"; onActivated: if (root.playerFullscreen) root.setPlayerFullscreen(false); else if (root.visibility === Window.FullScreen) root.showNormal() }
-    Shortcut { sequence: "M"; onActivated: playerController.muted = !playerController.muted }
-    Shortcut { sequence: "Space"; onActivated: playerController.paused = !playerController.paused }
+    Shortcut { sequence: "Escape"; enabled: root.playerFullscreen || root.visibility === Window.FullScreen; onActivated: if (root.playerFullscreen) root.setPlayerFullscreen(false); else root.showNormal() }
+    Shortcut { sequence: "M"; enabled: playerController.mode === "native" && !root.textInputFocused; onActivated: playerController.muted = !playerController.muted }
+    Shortcut { sequence: "Space"; enabled: playerController.mode === "native" && !root.textInputFocused; onActivated: playerController.paused = !playerController.paused }
 
     header: ToolBar {
         id: toolbar
@@ -1027,7 +1028,11 @@ ApplicationWindow {
         }
     }
 
-    Dialogs.SettingsSheet { id: settingsSheet; onConnectRequested: { settingsSheet.close(); Qt.callLater(function() { root.openAuthDialog() }) } }
+    Dialogs.SettingsSheet {
+        id: settingsSheet
+        onConnectRequested: { settingsSheet.close(); Qt.callLater(function() { root.openAuthDialog() }) }
+        onAboutRequested: { settingsSheet.close(); Qt.callLater(function() { aboutDialog.open() }) }
+    }
     Dialogs.AboutDialog { id: aboutDialog }
     Dialogs.AuthDialog { id: authDialog }
 }

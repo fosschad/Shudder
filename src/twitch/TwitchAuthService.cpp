@@ -14,6 +14,8 @@
 namespace {
 constexpr auto kSecretKind = "twitch-oauth";
 constexpr auto kBundledPublicClientId = "6kt5h1zfzmdv5vre9ios9qfr3lobmq";
+constexpr int kInitialAuthRetryMs = 60000;
+constexpr int kMaximumAuthRetryMs = 15 * 60 * 1000;
 
 QString configuredClientId()
 {
@@ -30,7 +32,10 @@ TwitchAuthService::TwitchAuthService(ShudderSecretStore *secretStore, QObject *p
   m_pollTimer.setSingleShot(false);
   connect(&m_pollTimer, &QTimer::timeout, this, &TwitchAuthService::pollDeviceToken);
   m_refreshTimer.setSingleShot(true);
-  connect(&m_refreshTimer, &QTimer::timeout, this, &TwitchAuthService::refreshToken);
+  connect(&m_refreshTimer, &QTimer::timeout, this, [this]() {
+    if (m_authTimerAction == AuthTimerAction::Validate) validateToken();
+    else refreshToken();
+  });
   loadStoredToken();
   if (hasToken()) validateToken();
 }
@@ -42,6 +47,22 @@ void TwitchAuthService::setClientId(const QString &clientId)
   const QString trimmed = clientId.trimmed();
   const bool oldCanSignIn = canSignIn();
   if (m_clientId == trimmed) return;
+  const bool wasSignedIn = signedIn();
+  cancelDeviceAuthorization();
+  m_refreshTimer.stop();
+  ++m_authGeneration;
+  if (wasSignedIn) {
+    m_token = {};
+    m_userId.clear();
+    m_login.clear();
+    m_displayName.clear();
+    m_avatarUrl = QUrl();
+    m_followedBroadcasterIds.clear();
+    if (m_secretStore) m_secretStore->clear(QString::fromLatin1(kSecretKind));
+    emit accessTokenChanged();
+    emit signedInChanged();
+    emit accountChanged();
+  }
   m_clientId = trimmed;
   emit clientIdChanged();
   if (oldCanSignIn != canSignIn()) emit canSignInChanged();
@@ -70,45 +91,36 @@ void TwitchAuthService::beginDeviceAuthorization()
     return;
   }
   cancelDeviceAuthorization();
+  const quint64 generation = ++m_deviceGeneration;
+  const QString clientId = m_clientId;
   setBusy(true);
   setStatus(tr("Requesting a Twitch device code..."));
 
   QUrlQuery body;
-  body.addQueryItem(QStringLiteral("client_id"), m_clientId);
+  body.addQueryItem(QStringLiteral("client_id"), clientId);
   body.addQueryItem(QStringLiteral("scopes"), scopes().join(QLatin1Char(' ')));
   QNetworkReply *reply = m_network.post(oauthRequest(QUrl(QStringLiteral("https://id.twitch.tv/oauth2/device"))), formEncode(body).toUtf8());
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply]() {
-    setBusy(false);
+  connect(reply, &QNetworkReply::finished, this, [this, reply, generation, clientId]() {
     const QByteArray payload = reply->readAll();
+    if (generation != m_deviceGeneration || clientId != m_clientId) {
+      reply->deleteLater();
+      return;
+    }
+    setBusy(false);
     if (reply->error() != QNetworkReply::NoError) {
       setStatus(tr("Twitch Device Code request failed: %1").arg(reply->errorString()));
       reply->deleteLater();
       return;
     }
-    const QJsonObject object = QJsonDocument::fromJson(payload).object();
-    m_deviceCode = object.value(QStringLiteral("device_code")).toString();
-    m_deviceUserCode = object.value(QStringLiteral("user_code")).toString();
-    m_deviceVerificationUri = QUrl(object.value(QStringLiteral("verification_uri")).toString());
-    const int intervalSeconds = qMax(1, object.value(QStringLiteral("interval")).toInt(5));
-    const int expiresSeconds = qMax(1, object.value(QStringLiteral("expires_in")).toInt(600));
-    m_deviceExpiresAt = QDateTime::currentDateTimeUtc().addSecs(expiresSeconds);
-    if (m_deviceCode.isEmpty() || m_deviceUserCode.isEmpty() || !m_deviceVerificationUri.isValid()) {
-      setStatus(tr("Twitch returned an invalid Device Code response."));
-      clearDeviceAuthorization();
-      reply->deleteLater();
-      return;
-    }
-    emit deviceAuthorizationChanged();
-    setStatus(tr("Enter code %1 on Twitch, then keep this window open.").arg(m_deviceUserCode));
-    QDesktopServices::openUrl(m_deviceVerificationUri);
-    m_pollTimer.start(intervalSeconds * 1000);
+    if (applyDeviceCodePayload(payload, generation, clientId)) QDesktopServices::openUrl(m_deviceVerificationUri);
     reply->deleteLater();
   });
 }
 
 void TwitchAuthService::cancelDeviceAuthorization()
 {
+  ++m_deviceGeneration;
   m_pollTimer.stop();
   m_pollInFlight = false;
   clearDeviceAuthorization();
@@ -135,8 +147,10 @@ void TwitchAuthService::signOut()
 
 void TwitchAuthService::refreshNow()
 {
-  if (hasToken()) refreshToken();
-  else validateToken();
+  m_refreshTimer.stop();
+  if (!hasToken()) return;
+  if (m_token.refreshToken.isEmpty()) validateToken();
+  else refreshToken();
 }
 
 bool TwitchAuthService::isFollowing(const QString &broadcasterId) const
@@ -201,6 +215,28 @@ void TwitchAuthService::clearDeviceAuthorization()
   if (changed) emit deviceAuthorizationChanged();
 }
 
+bool TwitchAuthService::applyDeviceCodePayload(const QByteArray &payload, quint64 generation, const QString &clientId)
+{
+  if (generation != m_deviceGeneration || clientId != m_clientId) return false;
+  const QJsonObject object = QJsonDocument::fromJson(payload).object();
+  m_deviceCode = object.value(QStringLiteral("device_code")).toString();
+  m_deviceUserCode = object.value(QStringLiteral("user_code")).toString();
+  m_deviceVerificationUri = QUrl(object.value(QStringLiteral("verification_uri")).toString());
+  const int intervalSeconds = qMax(1, object.value(QStringLiteral("interval")).toInt(5));
+  const int expiresSeconds = qMax(1, object.value(QStringLiteral("expires_in")).toInt(600));
+  m_deviceExpiresAt = QDateTime::currentDateTimeUtc().addSecs(expiresSeconds);
+  if (m_deviceCode.isEmpty() || m_deviceUserCode.isEmpty() || m_deviceVerificationUri.isEmpty() || !m_deviceVerificationUri.isValid() ||
+      m_deviceVerificationUri.scheme() != QLatin1String("https") || m_deviceVerificationUri.host().isEmpty()) {
+    setStatus(tr("Twitch returned an invalid Device Code response."));
+    clearDeviceAuthorization();
+    return false;
+  }
+  emit deviceAuthorizationChanged();
+  setStatus(tr("Enter code %1 on Twitch, then keep this window open.").arg(m_deviceUserCode));
+  m_pollTimer.start(intervalSeconds * 1000);
+  return true;
+}
+
 void TwitchAuthService::pollDeviceToken()
 {
   if (m_deviceCode.isEmpty() || m_pollInFlight) return;
@@ -216,15 +252,17 @@ void TwitchAuthService::pollDeviceToken()
   body.addQueryItem(QStringLiteral("device_code"), m_deviceCode);
   body.addQueryItem(QStringLiteral("grant_type"), QStringLiteral("urn:ietf:params:oauth:grant-type:device_code"));
   const QString requestedDeviceCode = m_deviceCode;
+  const quint64 generation = m_deviceGeneration;
+  const QString clientId = m_clientId;
   m_pollInFlight = true;
   QNetworkReply *reply = m_network.post(oauthRequest(QUrl(QStringLiteral("https://id.twitch.tv/oauth2/token"))), formEncode(body).toUtf8());
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, requestedDeviceCode]() {
-    m_pollInFlight = false;
-    if (requestedDeviceCode != m_deviceCode) {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, requestedDeviceCode, generation, clientId]() {
+    if (generation != m_deviceGeneration || clientId != m_clientId || requestedDeviceCode != m_deviceCode) {
       reply->deleteLater();
       return;
     }
+    m_pollInFlight = false;
     const QByteArray payload = reply->readAll();
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
     const QString message = object.value(QStringLiteral("message")).toString();
@@ -244,20 +282,15 @@ void TwitchAuthService::pollDeviceToken()
       reply->deleteLater();
       return;
     }
-    TokenSet token;
-    token.accessToken = object.value(QStringLiteral("access_token")).toString();
-    token.refreshToken = object.value(QStringLiteral("refresh_token")).toString();
-    token.expiresAt = QDateTime::currentDateTimeUtc().addSecs(qMax(60, object.value(QStringLiteral("expires_in")).toInt(3600)));
-    const QJsonArray scopeArray = object.value(QStringLiteral("scope")).toArray();
-    for (const auto &scope : scopeArray) token.scopes.push_back(scope.toString());
-    if (token.accessToken.isEmpty() || token.refreshToken.isEmpty()) {
+    auto token = tokenFromRefreshPayload(payload, {});
+    if (!token || token->refreshToken.isEmpty()) {
       setStatus(tr("Twitch returned an incomplete token response."));
       reply->deleteLater();
       return;
     }
     m_pollTimer.stop();
     clearDeviceAuthorization();
-    applyToken(std::move(token));
+    applyToken(std::move(*token));
     storeTokenAsync();
     validateToken();
     reply->deleteLater();
@@ -280,13 +313,22 @@ void TwitchAuthService::validateToken()
       reply->deleteLater();
       return;
     }
-    const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
+    const QByteArray payload = reply->readAll();
     if (reply->error() != QNetworkReply::NoError) {
-      if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 401 && !m_token.refreshToken.isEmpty()) refreshToken();
-      else setStatus(tr("Could not validate Twitch sign-in: %1").arg(reply->errorString()));
+      if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 401) {
+        if (!m_token.refreshToken.isEmpty()) refreshToken();
+        else {
+          signOut();
+          setStatus(tr("Twitch sign-in expired. Sign in again."));
+        }
+      } else {
+        setStatus(tr("Could not validate Twitch sign-in: %1").arg(reply->errorString()));
+        scheduleAuthRetry(AuthTimerAction::Validate);
+      }
       reply->deleteLater();
       return;
     }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
     m_userId = object.value(QStringLiteral("user_id")).toString();
     m_login = object.value(QStringLiteral("login")).toString();
     m_displayName = m_login;
@@ -294,6 +336,8 @@ void TwitchAuthService::validateToken()
     emit accountChanged();
     setStatus(tr("Signed in to Twitch as %1.").arg(displayName()));
     requestUserProfile();
+    m_authRetryDelayMs = kInitialAuthRetryMs;
+    m_authTimerAction = AuthTimerAction::Refresh;
     const qint64 seconds = qMax<qint64>(60, QDateTime::currentDateTimeUtc().secsTo(m_token.expiresAt) - 120);
     m_refreshTimer.start(int(qMin<qint64>(seconds, 24 * 3600) * 1000));
     reply->deleteLater();
@@ -356,22 +400,38 @@ void TwitchAuthService::refreshToken()
       reply->deleteLater();
       return;
     }
-    const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
+    const QByteArray payload = reply->readAll();
     if (reply->error() != QNetworkReply::NoError) {
-      setStatus(tr("Twitch token refresh failed: %1").arg(UrlUtils::redactedForLog(reply->errorString())));
+      const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+      if (isPermanentRefreshFailure(httpStatus)) {
+        signOut();
+        setStatus(tr("Twitch sign-in expired. Sign in again."));
+      } else {
+        setStatus(tr("Twitch token refresh failed: %1").arg(UrlUtils::redactedForLog(reply->errorString())));
+        scheduleAuthRetry(AuthTimerAction::Refresh);
+      }
       reply->deleteLater();
       return;
     }
-    TokenSet token;
-    token.accessToken = object.value(QStringLiteral("access_token")).toString();
-    token.refreshToken = object.value(QStringLiteral("refresh_token")).toString(m_token.refreshToken);
-    token.expiresAt = QDateTime::currentDateTimeUtc().addSecs(qMax(60, object.value(QStringLiteral("expires_in")).toInt(3600)));
-    for (const auto &scope : object.value(QStringLiteral("scope")).toArray()) token.scopes.push_back(scope.toString());
-    applyToken(std::move(token));
+    auto token = tokenFromRefreshPayload(payload, m_token.refreshToken);
+    if (!token) {
+      setStatus(tr("Twitch returned an incomplete token refresh response."));
+      scheduleAuthRetry(AuthTimerAction::Refresh);
+      reply->deleteLater();
+      return;
+    }
+    applyToken(std::move(*token));
     storeTokenAsync();
     validateToken();
     reply->deleteLater();
   });
+}
+
+void TwitchAuthService::scheduleAuthRetry(AuthTimerAction action)
+{
+  m_authTimerAction = action;
+  m_refreshTimer.start(m_authRetryDelayMs);
+  m_authRetryDelayMs = qMin(m_authRetryDelayMs * 2, kMaximumAuthRetryMs);
 }
 
 void TwitchAuthService::storeTokenAsync()
@@ -397,6 +457,10 @@ void TwitchAuthService::loadStoredToken()
   token.expiresAt = QDateTime::fromString(object.value(QStringLiteral("expiresAt")).toString(), Qt::ISODateWithMs);
   for (const auto &scope : object.value(QStringLiteral("scopes")).toArray()) token.scopes.push_back(scope.toString());
   const QString storedClientId = object.value(QStringLiteral("clientId")).toString();
+  if (!storedClientId.isEmpty() && !m_clientId.isEmpty() && storedClientId != m_clientId) {
+    setStatus(tr("Stored Twitch credentials belong to a different Client ID and were ignored."));
+    return;
+  }
   if (m_clientId.isEmpty() && !storedClientId.isEmpty()) setClientId(storedClientId);
   if (!token.accessToken.isEmpty()) applyToken(std::move(token));
 }
@@ -405,9 +469,26 @@ void TwitchAuthService::applyToken(TokenSet token)
 {
   const bool wasSignedIn = signedIn();
   ++m_authGeneration;
+  m_authRetryDelayMs = kInitialAuthRetryMs;
+  m_authTimerAction = AuthTimerAction::Refresh;
   m_token = std::move(token);
   emit accessTokenChanged();
   if (wasSignedIn != signedIn()) emit signedInChanged();
+}
+
+std::optional<TwitchAuthService::TokenSet> TwitchAuthService::tokenFromRefreshPayload(const QByteArray &payload, const QString &currentRefreshToken)
+{
+  const QJsonDocument document = QJsonDocument::fromJson(payload);
+  if (!document.isObject()) return std::nullopt;
+  const QJsonObject object = document.object();
+  TokenSet token;
+  token.accessToken = object.value(QStringLiteral("access_token")).toString().trimmed();
+  token.refreshToken = object.value(QStringLiteral("refresh_token")).toString(currentRefreshToken).trimmed();
+  if (token.refreshToken.isEmpty()) token.refreshToken = currentRefreshToken.trimmed();
+  if (token.accessToken.isEmpty()) return std::nullopt;
+  token.expiresAt = QDateTime::currentDateTimeUtc().addSecs(qMax(60, object.value(QStringLiteral("expires_in")).toInt(3600)));
+  for (const auto &scope : object.value(QStringLiteral("scope")).toArray()) token.scopes.push_back(scope.toString());
+  return token;
 }
 
 QNetworkRequest TwitchAuthService::helixRequest(const QUrl &url) const
@@ -427,6 +508,11 @@ QNetworkRequest TwitchAuthService::oauthRequest(const QUrl &url) const
   request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Shudder/%1").arg(QString::fromLatin1(SHUDDER_VERSION)));
   request.setTransferTimeout(15000);
   return request;
+}
+
+bool TwitchAuthService::isPermanentRefreshFailure(int httpStatus)
+{
+  return httpStatus == 400 || httpStatus == 401;
 }
 
 QStringList TwitchAuthService::scopes()
