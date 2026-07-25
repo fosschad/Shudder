@@ -122,12 +122,20 @@ if [[ -n "$qt_libexec_dir" && -x "$qt_libexec_dir/QtWebEngineProcess" ]]; then
 fi
 
 qt_resources_dir=""
+qt_install_prefix=""
+qt_install_data=""
 if [[ -n "$qt_qmake" ]]; then
-  qt_resources_dir="$("$qt_qmake" -query QT_INSTALL_RESOURCES 2>/dev/null || true)"
-  [[ -d "$qt_resources_dir" ]] || qt_resources_dir=""
+  qt_install_prefix="$("$qt_qmake" -query QT_INSTALL_PREFIX 2>/dev/null || true)"
+  qt_install_data="$("$qt_qmake" -query QT_INSTALL_DATA 2>/dev/null || true)"
 fi
-if [[ -z "$qt_resources_dir" ]]; then
-  for candidate in /usr/share/qt6/resources /usr/lib/qt6/resources /usr/lib64/qt6/resources; do
+for candidate in "$qt_install_prefix/resources" "$qt_install_data/resources" /usr/share/qt6/resources /usr/lib/qt6/resources /usr/lib64/qt6/resources; do
+  if [[ -d "$candidate" ]]; then
+    qt_resources_dir="$candidate"
+    break
+  fi
+done
+if [[ -z "$qt_resources_dir" && -n "${QT_ROOT_DIR:-}" ]]; then
+  for candidate in "$QT_ROOT_DIR/resources" "$QT_ROOT_DIR/share/qt6/resources"; do
     if [[ -d "$candidate" ]]; then
       qt_resources_dir="$candidate"
       break

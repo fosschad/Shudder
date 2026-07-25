@@ -27,6 +27,7 @@ root="$extract_dir/squashfs-root"
 test -x "$root/AppRun"
 test -x "$root/usr/bin/shudder"
 test -x "$root/usr/libexec/QtWebEngineProcess"
+test -s "$root/usr/resources/qtwebengine_resources.pak"
 compgen -G "$root/usr/lib/libQt6Core.so.6*" >/dev/null
 compgen -G "$root/usr/plugins/platforms/libqwayland*.so" >/dev/null
 
