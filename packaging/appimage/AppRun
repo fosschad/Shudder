@@ -1,5 +1,6 @@
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
+export SHUDDER_APPIMAGE_HOST_LD_LIBRARY_PATH="${LD_LIBRARY_PATH-}"
 export LD_LIBRARY_PATH="$HERE/usr/lib"
 export QT_PLUGIN_PATH="$HERE/usr/plugins"
 export QML2_IMPORT_PATH="$HERE/usr/qml"

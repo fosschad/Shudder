@@ -34,7 +34,7 @@ void ShudderCoreTests::appIdentityIsShudder()
   QCOMPARE(QStringLiteral(SHUDDER_EXECUTABLE_NAME), QStringLiteral("shudder"));
   QVERIFY(QStringLiteral(SHUDDER_APP_ID).startsWith(QStringLiteral("io.github.")));
   QVERIFY(!QStringLiteral(SHUDDER_APP_ID).contains(QStringLiteral("ACTUAL_FORK_OWNER")));
-  QCOMPARE(QStringLiteral(SHUDDER_VERSION), QStringLiteral("0.1.1"));
+  QCOMPARE(QStringLiteral(SHUDDER_VERSION), QStringLiteral("0.1.2"));
 }
 
 void ShudderCoreTests::releaseMetadataIsConsistent()
@@ -42,11 +42,12 @@ void ShudderCoreTests::releaseMetadataIsConsistent()
   QFile changelog(QStringLiteral(SHUDDER_SOURCE_DIR "/CHANGELOG.md"));
   QVERIFY(changelog.open(QIODevice::ReadOnly));
   const QByteArray changelogText = changelog.readAll();
-  QVERIFY(changelogText.contains("## [0.1.1] - 2026-07-25"));
+  QVERIFY(changelogText.contains("## [0.1.2] - 2026-07-25"));
 
   QFile metadata(QStringLiteral(SHUDDER_BINARY_DIR "/packaging/" SHUDDER_APP_ID ".metainfo.xml"));
   QVERIFY(metadata.open(QIODevice::ReadOnly));
   const QByteArray metadataText = metadata.readAll();
+  QVERIFY(metadataText.contains("<release version=\"0.1.2\" date=\"2026-07-25\">"));
   QVERIFY(metadataText.contains("<release version=\"0.1.1\" date=\"2026-07-25\">"));
   QVERIFY(metadataText.contains("<release version=\"0.1.0\" date=\"2026-07-22\">"));
 

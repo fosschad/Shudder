@@ -1,5 +1,6 @@
 set(TEST_COMMON_SOURCES
   ../src/chat/IrcParser.cpp
+  ../src/core/ExternalProcessEnvironment.cpp
   ../src/core/UrlUtils.cpp
   ../src/core/XdgPaths.cpp
   ../src/storage/PreferencesService.cpp
@@ -75,6 +76,7 @@ add_test(NAME shudder_chat_model_tests COMMAND shudder_chat_model_tests)
 
 add_executable(shudder_playback_process_tests
   tst_playback_process.cpp
+  ../src/core/ExternalProcessEnvironment.cpp
   ../src/core/UrlUtils.cpp
   ../src/playback/PlayerController.cpp
   ../src/playback/StreamlinkResolver.cpp

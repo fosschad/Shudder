@@ -2,6 +2,13 @@
 
 All notable changes to Shudder will be documented in this file.
 
+## [0.1.2] - 2026-07-25
+
+### Fixed
+
+- Isolated host Streamlink and Python processes from AppImage libraries, preventing bundled OpenSSL from overriding host-compatible libraries.
+- Replaced raw Streamlink tracebacks in playback status with concise authentication, unsupported-stream, missing-tool, and runtime-library errors while retaining redacted diagnostics.
+
 ## [0.1.1] - 2026-07-25
 
 ### Fixed

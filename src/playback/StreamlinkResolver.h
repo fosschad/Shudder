@@ -46,11 +46,13 @@ private:
   QString m_requestedQuality;
   QString m_streamlinkQuality;
   QString m_accessToken;
+  QString m_processPreviousError;
   QProcess m_qualityProcess;
   QTimer m_qualityTimeout;
   std::unique_ptr<QTemporaryFile> m_qualityConfig;
   QString m_qualityChannel;
   QString m_qualityAccessToken;
+  QString m_qualityPreviousError;
   int m_qualityAttempt = 0;
   bool m_enhancedAttempt = false;
   quint64 m_processGeneration = 0;
@@ -64,6 +66,7 @@ private:
   void startProcess(bool enhanced);
   void startQualityProcess(int attempt);
   [[nodiscard]] QStringList twitchArguments(bool codecs) const;
+  [[nodiscard]] static QString processFailureMessage(const QString &standardError, bool listingQualities);
   [[nodiscard]] static std::unique_ptr<QTemporaryFile> createAuthConfig(const QString &accessToken);
   static void cleanupConfig(std::unique_ptr<QTemporaryFile> &config);
   void setStatus(QString status);

@@ -4,6 +4,7 @@ configure_file(app/shudder_config.h.in "${SHUDDER_CONFIG_HEADER}" @ONLY)
 set(SHUDDER_SOURCES
   app/main.cpp
   app/AppController.cpp
+  core/ExternalProcessEnvironment.cpp
   core/XdgPaths.cpp
   core/UrlUtils.cpp
   storage/PreferencesService.cpp
@@ -21,6 +22,17 @@ set(SHUDDER_SOURCES
 )
 
 qt_add_executable(shudder ${SHUDDER_SOURCES})
+
+add_executable(shudder_host_tool_probe
+  core/HostToolProbe.cpp
+  core/ExternalProcessEnvironment.cpp
+)
+target_include_directories(shudder_host_tool_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(shudder_host_tool_probe PRIVATE Qt6::Core shudder_sanitizers)
+set_target_properties(shudder_host_tool_probe PROPERTIES
+  OUTPUT_NAME shudder-host-tool-probe
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/src"
+)
 
 set(SHUDDER_QML_FILES
   ${CMAKE_SOURCE_DIR}/qml/Main.qml

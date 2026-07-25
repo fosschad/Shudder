@@ -1,15 +1,15 @@
 #include "playback/StreamlinkResolver.h"
 
+#include "core/ExternalProcessEnvironment.h"
 #include "core/UrlUtils.h"
 #include "shudder_config.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
-#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
-#include <QStandardPaths>
 
 StreamlinkResolver::StreamlinkResolver(QObject *parent) : QObject(parent), m_streamlinkPath(discoverExecutable())
 {
@@ -37,11 +37,14 @@ StreamlinkResolver::StreamlinkResolver(QObject *parent) : QObject(parent), m_str
       emit resolved(m_channel, out.split(QLatin1Char('\n')).first().trimmed());
     } else {
       if (m_enhancedAttempt) {
+        m_processPreviousError = err;
         setStatus(tr("Retrying %1 without Twitch auth/header options...").arg(m_requestedQuality));
         startProcess(false);
         return;
       }
-      const QString message = err.isEmpty() ? tr("Streamlink could not resolve this stream.") : err.left(800);
+      const QString details = QStringList{m_processPreviousError, err}.join(QLatin1Char('\n')).trimmed();
+      if (!details.isEmpty()) qWarning().noquote() << "Streamlink resolve error:" << details.left(4000);
+      const QString message = processFailureMessage(details, false);
       setStatus(message);
       emit failed(m_channel, message);
     }
@@ -68,10 +71,13 @@ StreamlinkResolver::StreamlinkResolver(QObject *parent) : QObject(parent), m_str
       }
     }
     if (m_qualityAttempt < 2) {
+      if (!err.isEmpty()) m_qualityPreviousError += (m_qualityPreviousError.isEmpty() ? QString() : QStringLiteral("\n")) + err;
       startQualityProcess(m_qualityAttempt + 1);
       return;
     }
-    const QString message = err.isEmpty() ? tr("Streamlink could not list stream qualities.") : err.left(800);
+    const QString details = QStringList{m_qualityPreviousError, err}.join(QLatin1Char('\n')).trimmed();
+    if (!details.isEmpty()) qWarning().noquote() << "Streamlink quality error:" << details.left(4000);
+    const QString message = processFailureMessage(details, true);
     emit qualitiesFailed(m_qualityChannel, message);
   });
   connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
@@ -161,6 +167,7 @@ void StreamlinkResolver::resolve(const QString &channel, const QString &quality,
   m_requestedQuality = quality.trimmed().isEmpty() ? QStringLiteral("source") : quality.trimmed().toLower();
   m_streamlinkQuality = streamlinkQualityArgument(m_requestedQuality);
   m_accessToken = accessToken.trimmed();
+  m_processPreviousError.clear();
   setStatus(tr("Resolving %1 at %2 with Streamlink...").arg(login, m_requestedQuality));
   if (m_process.state() != QProcess::NotRunning) {
     m_resolveRestartPending = true;
@@ -183,6 +190,7 @@ void StreamlinkResolver::startProcess(bool enhanced)
     if (m_processConfig) args << QStringLiteral("--config") << m_processConfig->fileName();
   }
   args << QStringLiteral("https://www.twitch.tv/%1").arg(m_channel) << m_streamlinkQuality;
+  m_process.setProcessEnvironment(ExternalProcessEnvironment::forHostTool());
   m_process.start(m_streamlinkPath, args);
   m_processTimeout.start();
 }
@@ -199,6 +207,7 @@ void StreamlinkResolver::requestQualities(const QString &channel, const QString 
   m_qualityTimeout.stop();
   m_qualityChannel = login;
   m_qualityAccessToken = accessToken.trimmed();
+  m_qualityPreviousError.clear();
   if (m_qualityProcess.state() != QProcess::NotRunning) {
     m_qualityRestartPending = true;
     m_qualityProcess.kill();
@@ -220,6 +229,7 @@ void StreamlinkResolver::startQualityProcess(int attempt)
     if (m_qualityConfig) args << QStringLiteral("--config") << m_qualityConfig->fileName();
   }
   args << QStringLiteral("https://www.twitch.tv/%1").arg(m_qualityChannel);
+  m_qualityProcess.setProcessEnvironment(ExternalProcessEnvironment::forHostTool());
   m_qualityProcess.start(m_streamlinkPath, args);
   m_qualityTimeout.start();
 }
@@ -229,6 +239,26 @@ QStringList StreamlinkResolver::twitchArguments(bool codecs) const
   QStringList args{QStringLiteral("--twitch-disable-hosting")};
   if (codecs) args << QStringLiteral("--twitch-supported-codecs") << QStringLiteral("av1,h265,h264");
   return args;
+}
+
+QString StreamlinkResolver::processFailureMessage(const QString &standardError, bool listingQualities)
+{
+  const QString error = standardError.toLower();
+  if (error.contains(QLatin1String("importerror")) || error.contains(QLatin1String("error while loading shared libraries")) ||
+      error.contains(QLatin1String("libcrypto")) || error.contains(QLatin1String("libssl")) ||
+      (error.contains(QLatin1String("version `")) && error.contains(QLatin1String("not found")))) {
+    return tr("Streamlink could not start because its host runtime libraries are incompatible.");
+  }
+  if (error.contains(QLatin1String("authentication")) || error.contains(QLatin1String("unauthorized")) ||
+      error.contains(QLatin1String("oauth")) || error.contains(QLatin1String("http 401")) || error.contains(QLatin1String("http 403"))) {
+    return tr("Streamlink authentication failed. Reconnect Twitch and try again.");
+  }
+  if (error.contains(QLatin1String("no plugin can handle")) || error.contains(QLatin1String("no playable streams")) ||
+      error.contains(QLatin1String("no streams found")) || error.contains(QLatin1String("is offline")) ||
+      error.contains(QLatin1String("unsupported url"))) {
+    return tr("No playable stream was found. The channel may be offline or unsupported.");
+  }
+  return listingQualities ? tr("Streamlink could not list stream qualities.") : tr("Streamlink could not resolve this stream.");
 }
 
 std::unique_ptr<QTemporaryFile> StreamlinkResolver::createAuthConfig(const QString &accessToken)
@@ -301,14 +331,14 @@ QString StreamlinkResolver::streamlinkQualityArgument(const QString &quality)
 
 QString StreamlinkResolver::discoverExecutable()
 {
-  const QStringList environment = {QStringLiteral("SHUDDER_STREAMLINK_PATH")};
-  for (const QString &variable : environment) {
-    const QByteArray value = qgetenv(variable.toLatin1().constData());
-    if (!value.isEmpty()) return QString::fromLocal8Bit(value);
-  }
-  QString bundled = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("streamlink"));
-  if (QFileInfo::exists(bundled)) return bundled;
-  return QStandardPaths::findExecutable(QStringLiteral("streamlink"));
+  const QProcessEnvironment environment = ExternalProcessEnvironment::forHostTool();
+  const QString overridePath = qEnvironmentVariable("SHUDDER_STREAMLINK_PATH");
+  if (!overridePath.isEmpty()) return ExternalProcessEnvironment::resolveHostExecutable(overridePath, environment);
+
+  const QString adjacent = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("streamlink"));
+  const QString resolvedAdjacent = ExternalProcessEnvironment::resolveHostExecutable(adjacent, environment);
+  if (!resolvedAdjacent.isEmpty()) return resolvedAdjacent;
+  return ExternalProcessEnvironment::resolveHostExecutable(QStringLiteral("streamlink"), environment);
 }
 
 void StreamlinkResolver::setStatus(QString status)

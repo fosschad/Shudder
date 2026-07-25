@@ -53,7 +53,9 @@ fi
 
 rm -rf "$appdir"
 cmake --install "$build_dir" --prefix "$PWD/$appdir/usr"
+cmake --build "$build_dir" --target shudder_host_tool_probe
 install -Dm755 packaging/appimage/AppRun "$appdir/AppRun"
+install -Dm755 "$build_dir/src/shudder-host-tool-probe" "$appdir/usr/libexec/shudder-host-tool-probe"
 install -Dm644 "assets/icons/hicolor/scalable/apps/shudder.svg" "$appdir/$app_id.svg"
 install -Dm644 "$build_dir/packaging/$app_id.desktop" "$appdir/$app_id.desktop"
 install -Dm644 "$build_dir/packaging/$app_id.metainfo.xml" "$appdir/usr/share/metainfo/$app_id.appdata.xml"
@@ -175,6 +177,7 @@ runtime_elfs=(
   "$appdir"/usr/plugins/**/*.so*
   "$appdir"/usr/qml/**/*.so*
   "$appdir/usr/libexec/QtWebEngineProcess"
+  "$appdir/usr/libexec/shudder-host-tool-probe"
 )
 shopt -u nullglob globstar
 deploy_dependency_args=()

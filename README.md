@@ -58,9 +58,11 @@ Generated artifacts are ignored by git and should be attached to releases or dis
 
 Native playback discovers Streamlink in this order:
 
-- `SHUDDER_STREAMLINK_PATH`
-- bundled `streamlink` beside the installed `shudder` binary, when a package provides one
-- system `streamlink` from `PATH`
+- executable `SHUDDER_STREAMLINK_PATH` outside the AppImage
+- an executable `streamlink` beside a non-AppImage installation
+- host `streamlink` from the sanitized system `PATH`
+
+Host tools inherit ordinary user settings, but AppImage library, Python, Qt plugin, and QML paths are removed before launch. This keeps Shudder on its bundled runtime without mixing those libraries into host Python modules.
 
 Runtime data is stored under `shudder` inside the standard XDG config, data, cache, state, and runtime directories.
 
