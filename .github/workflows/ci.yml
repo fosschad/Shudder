@@ -25,7 +25,10 @@ jobs:
       - name: Setup native Linux build
         uses: ./.github/actions/setup-native-linux
         with:
-          additional-system-packages: streamlink mpv weston dbus-x11 desktop-file-utils appstream rpm
+          additional-system-packages: streamlink mpv weston dbus-x11 desktop-file-utils appstream rpm file patchelf
+
+      - name: Setup AppImage tools
+        uses: ./.github/actions/setup-appimage-tools
 
       - name: Configure
         run: |
@@ -79,13 +82,65 @@ jobs:
             exit "$exit_code"
           fi
 
-      - name: Package DEB and RPM
+      - name: Package DEB RPM and TGZ
         run: cmake --build build --target package
+
+      - name: Build versioned AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: packaging/appimage/build-appimage.sh build
+
+      - name: Verify AppImage bundle
+        run: |
+          version="$(sed -n 's/^#define SHUDDER_VERSION "\(.*\)"/\1/p' build/src/generated/shudder_config.h)"
+          packaging/appimage/verify-appimage.sh "Shudder-${version}-x86_64.AppImage"
+
+      - name: AppImage Wayland smoke test
+        run: |
+          version="$(sed -n 's/^#define SHUDDER_VERSION "\(.*\)"/\1/p' build/src/generated/shudder_config.h)"
+          runtime_dir="$(mktemp -d)"
+          chmod 700 "$runtime_dir"
+          XDG_RUNTIME_DIR="$runtime_dir" weston --backend=headless-backend.so --socket=wayland-shudder-appimage --idle-time=0 >"$runtime_dir/weston.log" 2>&1 &
+          weston_pid=$!
+
+          cleanup() {
+            kill "$weston_pid" 2>/dev/null || true
+            wait "$weston_pid" 2>/dev/null || true
+            cat "$runtime_dir/weston.log" || true
+            rm -rf "$runtime_dir"
+          }
+
+          trap cleanup EXIT
+          sleep 2
+
+          set +e
+          env \
+            DISPLAY= \
+            XDG_RUNTIME_DIR="$runtime_dir" \
+            WAYLAND_DISPLAY=wayland-shudder-appimage \
+            QT_QPA_PLATFORM=wayland \
+            timeout 15s "./Shudder-${version}-x86_64.AppImage" --appimage-extract-and-run
+          exit_code=$?
+          set -e
+          if [ "$exit_code" -ne 124 ]; then
+            exit "$exit_code"
+          fi
 
       - name: Generate checksum manifest
         run: |
+          version="$(sed -n 's/^#define SHUDDER_VERSION "\(.*\)"/\1/p' build/src/generated/shudder_config.h)"
+          expected=(
+            "build/shudder_${version}_x86_64.tar.gz"
+            "build/shudder_${version}_amd64.deb"
+            "build/shudder-${version}-1.x86_64.rpm"
+            "Shudder-${version}-x86_64.AppImage"
+            "Shudder-${version}-x86_64.AppImage.sha256"
+          )
+          for artifact in "${expected[@]}"; do
+            test -s "$artifact"
+          done
           mkdir -p artifacts
-          cp build/*.deb build/*.rpm build/*.tar.gz artifacts/
+          cp "${expected[@]}" artifacts/
           cd artifacts
           sha256sum * > SHA256SUMS
 

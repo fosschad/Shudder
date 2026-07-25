@@ -1,0 +1,23 @@
+name: Setup AppImage tools
+description: Install pinned linuxdeploy and appimagetool binaries.
+runs:
+  using: composite
+  steps:
+    - name: Install AppImage tools
+      shell: bash
+      run: |
+        tools_dir="$RUNNER_TEMP/shudder-appimage-tools"
+        mkdir -p "$tools_dir"
+
+        curl -fsSL \
+          https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage \
+          -o "$tools_dir/linuxdeploy"
+        echo "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d  $tools_dir/linuxdeploy" | sha256sum -c -
+
+        curl -fsSL \
+          https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage \
+          -o "$tools_dir/appimagetool"
+        echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $tools_dir/appimagetool" | sha256sum -c -
+
+        chmod +x "$tools_dir/linuxdeploy" "$tools_dir/appimagetool"
+        echo "$tools_dir" >> "$GITHUB_PATH"

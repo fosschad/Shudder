@@ -21,13 +21,18 @@ jobs:
       - name: Setup native Linux build
         uses: ./.github/actions/setup-native-linux
         with:
-          additional-system-packages: streamlink mpv desktop-file-utils appstream rpm
+          additional-system-packages: streamlink mpv weston desktop-file-utils appstream rpm file patchelf
+
+      - name: Setup AppImage tools
+        uses: ./.github/actions/setup-appimage-tools
 
       - name: Validate tag
         run: |
           version="${GITHUB_REF_NAME#v}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           grep -qx "  VERSION $version" CMakeLists.txt
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "SHUDDER_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
@@ -53,12 +58,76 @@ jobs:
       - name: Package
         run: cmake --build build --target package
 
+      - name: Build versioned AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: packaging/appimage/build-appimage.sh build
+
+      - name: Verify release artifacts
+        run: |
+          expected=(
+            "build/shudder_${SHUDDER_VERSION}_x86_64.tar.gz"
+            "build/shudder_${SHUDDER_VERSION}_amd64.deb"
+            "build/shudder-${SHUDDER_VERSION}-1.x86_64.rpm"
+            "Shudder-${SHUDDER_VERSION}-x86_64.AppImage"
+            "Shudder-${SHUDDER_VERSION}-x86_64.AppImage.sha256"
+          )
+          for artifact in "${expected[@]}"; do
+            test -s "$artifact"
+          done
+          packaging/appimage/verify-appimage.sh "Shudder-${SHUDDER_VERSION}-x86_64.AppImage"
+
+      - name: AppImage Wayland smoke test
+        run: |
+          runtime_dir="$(mktemp -d)"
+          chmod 700 "$runtime_dir"
+          XDG_RUNTIME_DIR="$runtime_dir" weston --backend=headless-backend.so --socket=wayland-shudder-appimage --idle-time=0 >"$runtime_dir/weston.log" 2>&1 &
+          weston_pid=$!
+
+          cleanup() {
+            kill "$weston_pid" 2>/dev/null || true
+            wait "$weston_pid" 2>/dev/null || true
+            cat "$runtime_dir/weston.log" || true
+            rm -rf "$runtime_dir"
+          }
+
+          trap cleanup EXIT
+          sleep 2
+
+          set +e
+          env \
+            DISPLAY= \
+            XDG_RUNTIME_DIR="$runtime_dir" \
+            WAYLAND_DISPLAY=wayland-shudder-appimage \
+            QT_QPA_PLATFORM=wayland \
+            timeout 15s "./Shudder-${SHUDDER_VERSION}-x86_64.AppImage" --appimage-extract-and-run
+          exit_code=$?
+          set -e
+          if [ "$exit_code" -ne 124 ]; then
+            exit "$exit_code"
+          fi
+
       - name: Prepare release payload
         run: |
           mkdir -p release
-          cp build/*.deb build/*.rpm build/*.tar.gz release/
+          cp \
+            "build/shudder_${SHUDDER_VERSION}_x86_64.tar.gz" \
+            "build/shudder_${SHUDDER_VERSION}_amd64.deb" \
+            "build/shudder-${SHUDDER_VERSION}-1.x86_64.rpm" \
+            "Shudder-${SHUDDER_VERSION}-x86_64.AppImage" \
+            "Shudder-${SHUDDER_VERSION}-x86_64.AppImage.sha256" \
+            release/
           cp CHANGELOG.md release/release-notes.md
-          (cd release && sha256sum * > SHA256SUMS)
+          (
+            cd release
+            sha256sum \
+              "shudder_${SHUDDER_VERSION}_x86_64.tar.gz" \
+              "shudder_${SHUDDER_VERSION}_amd64.deb" \
+              "shudder-${SHUDDER_VERSION}-1.x86_64.rpm" \
+              "Shudder-${SHUDDER_VERSION}-x86_64.AppImage" \
+              "Shudder-${SHUDDER_VERSION}-x86_64.AppImage.sha256" \
+              > SHA256SUMS
+          )
 
       - name: Upload release payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -114,6 +183,20 @@ jobs:
 
       - name: Publish immutable Shudder release
         run: |
+          version="${GITHUB_REF_NAME#v}"
+          expected=(
+            "release/shudder_${version}_x86_64.tar.gz"
+            "release/shudder_${version}_amd64.deb"
+            "release/shudder-${version}-1.x86_64.rpm"
+            "release/Shudder-${version}-x86_64.AppImage"
+            "release/Shudder-${version}-x86_64.AppImage.sha256"
+            "release/SHA256SUMS"
+            "release/release-notes.md"
+          )
+          for artifact in "${expected[@]}"; do
+            test -s "$artifact"
+          done
+          (cd release && sha256sum -c SHA256SUMS)
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $GITHUB_REF_NAME already exists; release assets are immutable."
             exit 1
@@ -121,7 +204,11 @@ jobs:
           gh release create "$GITHUB_REF_NAME" release/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --latest \
+            --draft \
             --notes-file release/release-notes.md
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

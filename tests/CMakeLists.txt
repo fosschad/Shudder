@@ -136,6 +136,13 @@ target_link_libraries(shudder_auth_service_tests PRIVATE
 
 add_test(NAME shudder_auth_service_tests COMMAND shudder_auth_service_tests)
 
+set_tests_properties(
+  shudder_chat_model_tests
+  shudder_auth_service_tests
+  PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 add_executable(shudder_secret_store_tests
   tst_secret_store.cpp
   ../src/storage/SecretService.cpp
