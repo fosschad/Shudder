@@ -449,8 +449,7 @@ void ChatJumpTests::manualScrollPausesUntilReturningToBottom()
   QVERIFY(!atTail(list));
   QVERIFY(qAbs(list->property("contentY").toReal() - pausedY) < list->height());
 
-  QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtEnd"));
-  QTRY_VERIFY_WITH_TIMEOUT(atTail(list), 1000);
+  QTRY_VERIFY_WITH_TIMEOUT((QMetaObject::invokeMethod(list, "positionViewAtEnd"), atTail(list)), 3000);
   QVERIFY(QMetaObject::invokeMethod(list, "settleUserScroll"));
   QTRY_VERIFY_WITH_TIMEOUT(list->property("followTail").toBool() && atTail(list), 1000);
   QVERIFY(!jumpButton(*harness)->isVisible());

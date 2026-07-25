@@ -84,7 +84,7 @@ if [[ -n "$qt_plugin_dir" ]]; then
       install -Dm755 "$qt_plugin_dir/imageformats/$plugin" "$appdir/usr/plugins/imageformats/$plugin"
     fi
   done
-  copy_qt_tree "$qt_plugin_dir" "$appdir/usr/plugins" platforms wayland-decoration-client xcbglintegrations platformthemes iconengines tls networkinformation
+  copy_qt_tree "$qt_plugin_dir" "$appdir/usr/plugins" platforms wayland-decoration-client wayland-graphics-integration-client wayland-shell-integration xcbglintegrations platformthemes iconengines tls networkinformation
 fi
 
 qt_qml_dir=""

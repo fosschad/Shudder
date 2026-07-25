@@ -50,23 +50,23 @@ void TabTransitionTests::persistentPagesKeepImmediateSurfacesAcrossSwitches()
   const QString componentsImport = QUrl::fromLocalFile(QStringLiteral(SHUDDER_SOURCE_DIR "/qml/components")).toString();
   QTcpServer slowServer;
   QVERIFY(slowServer.listen(QHostAddress::LocalHost));
-  const QByteArray png = QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=");
-  QObject::connect(&slowServer, &QTcpServer::newConnection, &slowServer, [&slowServer, png]() {
+  const QByteArray imageData = QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><rect width=\"2\" height=\"2\" fill=\"black\"/></svg>");
+  QObject::connect(&slowServer, &QTcpServer::newConnection, &slowServer, [&slowServer, imageData]() {
     while (QTcpSocket *socket = slowServer.nextPendingConnection()) {
-      QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket, png]() {
+      QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket, imageData]() {
         socket->readAll();
-        QTimer::singleShot(180, socket, [socket, png]() {
-          socket->write("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: max-age=3600\r\nContent-Length: ");
-          socket->write(QByteArray::number(png.size()));
+        QTimer::singleShot(180, socket, [socket, imageData]() {
+          socket->write("HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nCache-Control: max-age=3600\r\nContent-Length: ");
+          socket->write(QByteArray::number(imageData.size()));
           socket->write("\r\n\r\n");
-          socket->write(png);
+          socket->write(imageData);
           socket->disconnectFromHost();
         });
       });
       QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
     }
   });
-  const QString slowUrl = QStringLiteral("http://127.0.0.1:%1/slow.png").arg(slowServer.serverPort());
+  const QString slowUrl = QStringLiteral("http://127.0.0.1:%1/slow.svg").arg(slowServer.serverPort());
   out << R"QML(
 import QtQuick
 import QtQuick.Controls
