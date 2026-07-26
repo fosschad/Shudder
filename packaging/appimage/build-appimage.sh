@@ -172,6 +172,17 @@ if [[ -n "$qt_qmake" ]]; then
   fi
 fi
 
+# linuxdeploy's bundled patchelf corrupts the GNU hash table in current
+# libleancrypto builds. The library needs no RUNPATH because AppRun supplies
+# the bundle library directory, so restore the pristine file after deployment.
+leancrypto_source=""
+while read -r name arrow path _; do
+  if [[ "$name" == "libleancrypto.so.1" && "$arrow" == "=>" && -f "$path" ]]; then
+    leancrypto_source="$path"
+    break
+  fi
+done < <(LD_LIBRARY_PATH="$deployment_library_path" ldd "$appdir/usr/bin/shudder")
+
 shopt -s nullglob globstar
 runtime_elfs=(
   "$appdir"/usr/plugins/**/*.so*
@@ -191,6 +202,10 @@ NO_STRIP=1 LD_LIBRARY_PATH="$deployment_library_path" linuxdeploy \
   "${deploy_dependency_args[@]}" \
   --desktop-file "$appdir/$app_id.desktop" \
   --icon-file "$appdir/$app_id.svg"
+
+if [[ -n "$leancrypto_source" && -f "$appdir/usr/lib/libleancrypto.so.1" ]]; then
+  install -m755 "$leancrypto_source" "$appdir/usr/lib/libleancrypto.so.1"
+fi
 
 rm -f "Shudder-x86_64.AppImage" "Shudder-x86_64.AppImage.sha256" "$artifact" "$artifact.sha256"
 appimagetool "$appdir" "$artifact"

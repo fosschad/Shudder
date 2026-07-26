@@ -13,7 +13,12 @@ test -s "$checksum"
 )
 
 extract_dir="$(mktemp -d)"
+weston_pid=""
 cleanup() {
+  if [[ -n "$weston_pid" ]]; then
+    kill "$weston_pid" 2>/dev/null || true
+    wait "$weston_pid" 2>/dev/null || true
+  fi
   rm -rf "$extract_dir"
 }
 trap cleanup EXIT
@@ -52,6 +57,48 @@ for runtime_elf in "${runtime_elfs[@]}"; do
   ((++checked))
 done
 printf 'Verified dependencies for %d AppImage runtime files.\n' "$checked"
+
+for bundled_library in "$root"/usr/lib/*.so*; do
+  [[ -f "$bundled_library" ]] || continue
+  if readelf -h "$bundled_library" >/dev/null 2>&1; then
+    hash_metadata="$(readelf --use-dynamic --histogram "$bundled_library" 2>&1)"
+    if [[ "$hash_metadata" == *"Warning:"* || "$hash_metadata" == *"Error:"* ]]; then
+      printf '%s\n' "$hash_metadata" >&2
+      echo "Invalid dynamic hash metadata in $bundled_library" >&2
+      exit 1
+    fi
+  fi
+done
+echo "Verified dynamic hash metadata for bundled AppImage libraries."
+
+runtime_dir="$extract_dir/runtime"
+mkdir -m700 "$runtime_dir"
+XDG_RUNTIME_DIR="$runtime_dir" weston \
+  --backend=headless-backend.so \
+  --socket=wayland-shudder-verify \
+  --idle-time=0 \
+  >"$extract_dir/weston.log" 2>&1 &
+weston_pid=$!
+sleep 2
+
+set +e
+env \
+  DISPLAY= \
+  XDG_RUNTIME_DIR="$runtime_dir" \
+  WAYLAND_DISPLAY=wayland-shudder-verify \
+  QT_QPA_PLATFORM=wayland \
+  timeout --kill-after=2s 10s "$root/AppRun"
+startup_code=$?
+set -e
+if [[ "$startup_code" -ne 124 ]]; then
+  cat "$extract_dir/weston.log" >&2
+  echo "Extracted AppRun exited before the startup smoke-test timeout (status $startup_code)" >&2
+  exit "$startup_code"
+fi
+kill "$weston_pid" 2>/dev/null || true
+wait "$weston_pid" 2>/dev/null || true
+weston_pid=""
+echo "Verified extracted AppRun remains alive under headless Weston."
 
 run_host_tool() {
   env \

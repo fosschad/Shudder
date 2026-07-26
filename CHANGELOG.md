@@ -2,6 +2,13 @@
 
 All notable changes to Shudder will be documented in this file.
 
+## [0.1.3] - 2026-07-25
+
+### Fixed
+
+- Restored AppImage startup on systems where linuxdeploy corrupts the bundled LeanCrypto dynamic hash table.
+- Added bundled-library hash validation and an extracted AppRun startup check under headless Weston.
+
 ## [0.1.2] - 2026-07-25
 
 ### Fixed

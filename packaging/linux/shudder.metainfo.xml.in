@@ -25,6 +25,11 @@
     <name>@SHUDDER_GITHUB_OWNER@</name>
   </developer>
   <releases>
+    <release version="0.1.3" date="2026-07-25">
+      <description>
+        <p>Restores AppImage startup by preserving valid bundled library metadata and adds crash-sensitive startup verification.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-07-25">
       <description>
         <p>Fixes native playback in the AppImage by isolating host Streamlink and Python from bundled runtime libraries.</p>
