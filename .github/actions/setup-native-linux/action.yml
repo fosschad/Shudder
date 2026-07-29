@@ -23,6 +23,9 @@ runs:
           libegl1-mesa-dev
           libxkbcommon-dev
           wayland-protocols
+          weston
+          xauth
+          xvfb
         )
         if [[ -n "${{ inputs.additional-system-packages }}" ]]; then
           read -r -a extra_packages <<< "${{ inputs.additional-system-packages }}"

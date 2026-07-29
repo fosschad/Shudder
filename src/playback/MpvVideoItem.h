@@ -38,6 +38,11 @@ class MpvVideoItem : public QQuickFramebufferObject {
   Q_PROPERTY(QString hardwareDecoder READ hardwareDecoder NOTIFY statsChanged)
   Q_PROPERTY(int estimatedFrameNumber READ estimatedFrameNumber NOTIFY statsChanged)
   Q_PROPERTY(int estimatedFrameCount READ estimatedFrameCount NOTIFY statsChanged)
+  Q_PROPERTY(bool renderReady READ renderReady)
+  Q_PROPERTY(int renderContextGeneration READ renderContextGeneration)
+  Q_PROPERTY(quint64 sourceCommandCount READ sourceCommandCount)
+  Q_PROPERTY(quint64 renderedFrameCount READ renderedFrameCount)
+  Q_PROPERTY(QSize renderTargetSize READ renderTargetSize)
 
 public:
   explicit MpvVideoItem(QQuickItem *parent = nullptr);
@@ -75,6 +80,11 @@ public:
   [[nodiscard]] QString hardwareDecoder() const;
   [[nodiscard]] int estimatedFrameNumber() const;
   [[nodiscard]] int estimatedFrameCount() const;
+  [[nodiscard]] bool renderReady() const;
+  [[nodiscard]] int renderContextGeneration() const;
+  [[nodiscard]] quint64 sourceCommandCount() const;
+  [[nodiscard]] quint64 renderedFrameCount() const;
+  [[nodiscard]] QSize renderTargetSize() const;
 
   [[nodiscard]] std::shared_ptr<MpvSharedState> sharedState() const;
 
@@ -114,11 +124,18 @@ private:
   QString m_hardwareDecoder;
   int m_estimatedFrameNumber = 0;
   int m_estimatedFrameCount = 0;
-  QTimer m_updateTimer;
   QTimer m_statsTimer;
+  QMetaObject::Connection m_windowChangedConnection;
+  QMetaObject::Connection m_windowVisibilityConnection;
+  QMetaObject::Connection m_windowWidthConnection;
+  QMetaObject::Connection m_windowHeightConnection;
+  QMetaObject::Connection m_windowScreenConnection;
 
-  void command(const QVariantList &arguments);
   void updateStats();
+  void processMpvEvents();
   void resetStats();
   void setStatus(QString status);
+  void connectWindowDiagnostics(QQuickWindow *window);
+
+  friend struct MpvSharedState;
 };

@@ -78,7 +78,7 @@ signals:
   void mutedChanged();
   void volumeChanged();
   void qualityOptionsChanged();
-  void chatChannelRequested(const QString &channel);
+  void chatChannelRequested(const QString &channel, const QString &broadcasterId);
 
 private:
   PlayerHostServer *m_host = nullptr;

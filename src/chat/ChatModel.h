@@ -5,13 +5,17 @@
 #include <QAbstractListModel>
 #include <QHash>
 #include <QNetworkAccessManager>
+#include <QPointer>
 #include <QSet>
 #include <QStringList>
 #include <QTimer>
 #include <QVariantList>
 #include <QWebSocket>
 
+#include <optional>
+
 class QJsonObject;
+class QNetworkReply;
 
 class ChatModel : public QAbstractListModel {
   Q_OBJECT
@@ -65,10 +69,13 @@ public:
   [[nodiscard]] QVariantList emotePickerEmotes() const;
   [[nodiscard]] QStringList preloadEmoteImageUrls() const;
   void setSender(const QString &userId, const QString &login, const QString &displayName);
+  void updateChannelIdentity(const QString &channelLogin, const QString &broadcasterId);
 
   Q_INVOKABLE void join(const QString &channelLogin);
+  Q_INVOKABLE void join(const QString &channelLogin, const QString &broadcasterId);
   Q_INVOKABLE void disconnectChat();
   Q_INVOKABLE void refreshEmotePicker();
+  Q_INVOKABLE void reportEmoteImageStatus(const QString &provider, const QString &emoteId, const QString &imageUrl, const QString &status) const;
   Q_INVOKABLE bool sendMessage(const QString &body);
   Q_INVOKABLE bool sendReply(const QString &body, const QString &parentMessageId);
   Q_INVOKABLE void clear();
@@ -98,6 +105,12 @@ private:
     QString imageUrl;
     QString provider;
     QString owner;
+
+    bool operator==(const EmoteAsset &) const = default;
+  };
+  struct SevenTvSet {
+    QString id;
+    QVector<EmoteAsset> emotes;
   };
 
   QVector<ChatEvent> m_events;
@@ -115,8 +128,14 @@ private:
   QVector<EmoteAsset> m_bttvGlobalEmotes;
   QVector<EmoteAsset> m_bttvChannelEmotes;
   QNetworkAccessManager m_network;
+  QUrl m_sevenTvApiBaseUrl{QStringLiteral("https://7tv.io/v3/")};
+  QPointer<QNetworkReply> m_sevenTvGlobalReply;
+  QPointer<QNetworkReply> m_sevenTvChannelReply;
   QString m_channel;
   QString m_broadcasterId;
+  QString m_sevenTvGlobalSetId;
+  QString m_sevenTvChannelSetId;
+  QString m_sevenTvChannelBroadcasterId;
   QString m_senderUserId;
   QString m_senderLogin;
   QString m_senderDisplayName;
@@ -130,6 +149,10 @@ private:
   int m_reconnectAttempts = 0;
   quint64 m_requestGeneration = 0;
   quint64 m_badgeRequestGeneration = 0;
+  quint64 m_sevenTvGlobalRequestId = 0;
+  quint64 m_sevenTvChannelRequestId = 0;
+  bool m_sevenTvGlobalLoaded = false;
+  bool m_sevenTvChannelLoaded = false;
   bool m_modelMutationActive = false;
   bool m_shouldReconnect = false;
 
@@ -144,8 +167,12 @@ private:
   void requestBadges(const QString &path, const QString &channelSnapshot, quint64 generation, quint64 badgeGeneration, bool channelScoped);
   void requestEmoteAssets();
   void requestEmotes(const QString &path, const QString &owner, const QString &channelSnapshot, quint64 generation, bool channelScoped);
-  void requestSevenTvGlobalEmotes(const QString &channelSnapshot, quint64 generation);
-  void requestSevenTvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, quint64 generation);
+  void requestSevenTvGlobalEmotes(bool force = false);
+  void requestSevenTvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, bool force = false);
+  [[nodiscard]] static std::optional<SevenTvSet> parseSevenTvPayload(const QByteArray &payload, bool channelScoped, QString *errorMessage = nullptr);
+  bool applySevenTvPayload(const QByteArray &payload, bool channelScoped, const QString &channelSnapshot,
+                           const QString &broadcasterId, quint64 requestId);
+  bool applySevenTvChannelNotFound(const QString &channelSnapshot, const QString &broadcasterId, quint64 requestId);
   [[nodiscard]] static QString sevenTvImageUrl(const QJsonObject &data);
   void requestFfzGlobalEmotes(const QString &channelSnapshot, quint64 generation);
   void requestFfzChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, quint64 generation);

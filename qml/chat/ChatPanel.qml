@@ -434,6 +434,9 @@ Frame {
                                         fill: theme.transparent
                                         preferredSourceWidth: Math.max(32, preferences.get("chatEmoteSize") * 2)
                                         preferredSourceHeight: Math.max(32, preferences.get("chatEmoteSize") * 2)
+                                        onLoadFinished: function(status, imageUrl) {
+                                            chatModel.reportEmoteImageStatus(String(modelData.provider || ""), String(modelData.id || ""), imageUrl, status)
+                                        }
                                     }
                                     Text {
                                         anchors.centerIn: parent
@@ -810,7 +813,20 @@ Frame {
                                                         Item {
                                                             width: parent.width
                                                             height: 32
-                                                            Components.StableImage { id: pickerEmoteImage; anchors.centerIn: parent; width: 30; height: 30; source: modelData.imageUrl; fillMode: Image.PreserveAspectFit; fill: theme.transparent; preferredSourceWidth: 60; preferredSourceHeight: 60 }
+                                                            Components.StableImage {
+                                                                id: pickerEmoteImage
+                                                                anchors.centerIn: parent
+                                                                width: 30
+                                                                height: 30
+                                                                source: modelData.imageUrl
+                                                                fillMode: Image.PreserveAspectFit
+                                                                fill: theme.transparent
+                                                                preferredSourceWidth: 60
+                                                                preferredSourceHeight: 60
+                                                                onLoadFinished: function(status, imageUrl) {
+                                                                    chatModel.reportEmoteImageStatus(String(modelData.provider || ""), String(modelData.id || ""), imageUrl, status)
+                                                                }
+                                                            }
                                                             Text { anchors.centerIn: parent; visible: !pickerEmoteImage.ready; text: String(modelData.name || "?").charAt(0).toUpperCase(); color: theme.textMuted; font.pixelSize: 12; font.weight: Font.DemiBold }
                                                         }
                                                         Label { width: parent.width; text: modelData.name; color: theme.textSoft; font.pixelSize: 9; elide: Text.ElideRight; horizontalAlignment: Text.AlignHCenter }

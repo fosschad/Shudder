@@ -21,10 +21,12 @@ Item {
     property int sourceGeneration: 0
     property int retryGeneration: -1
     property string retrySource: ""
+    property string reportedResult: ""
     readonly property bool animatedSource: effectiveSource.toString().toLowerCase().indexOf(".gif") !== -1
     readonly property bool ready: animatedSource
-                                    ? animatedImage.status === AnimatedImage.Ready && animatedImage.source.toString() === source.toString()
-                                    : image.status === Image.Ready && image.source.toString() === source.toString()
+                                     ? animatedImage.status === AnimatedImage.Ready && animatedImage.source.toString() === source.toString()
+                                     : image.status === Image.Ready && image.source.toString() === source.toString()
+    signal loadFinished(string status, string imageUrl)
 
     onSourceChanged: {
         retryTimer.stop()
@@ -32,7 +34,25 @@ Item {
         sourceGeneration += 1
         retryGeneration = -1
         retrySource = ""
+        reportedResult = ""
         effectiveSource = source
+    }
+
+    function reportResult(status, imageSource) {
+        if (imageSource !== source.toString() || imageSource.length === 0 || reportedResult === status)
+            return
+        reportedResult = status
+        loadFinished(status, imageSource)
+    }
+
+    function handleStatus(status, imageSource, generation, readyValue, errorValue) {
+        if (generation !== sourceGeneration || imageSource !== source.toString()) return
+        if (status === readyValue) {
+            reportResult("ready", imageSource)
+        } else if (status === errorValue) {
+            if (retryCount >= maxRetries) reportResult("error", imageSource)
+            else scheduleRetry(imageSource, generation)
+        }
     }
 
     function scheduleRetry(failedSource, generation) {
@@ -81,7 +101,7 @@ Item {
         visible: !control.animatedSource && source.toString() === control.source.toString()
                  && source.toString().length > 0
                  && (status === Image.Ready || (control.retainWhileLoading && status === Image.Loading))
-        onStatusChanged: if (status === Image.Error) control.scheduleRetry(source.toString(), control.sourceGeneration)
+        onStatusChanged: control.handleStatus(status, source.toString(), control.sourceGeneration, Image.Ready, Image.Error)
     }
 
     AnimatedImage {
@@ -96,6 +116,6 @@ Item {
         sourceSize.height: control.preferredSourceHeight > 0 ? control.preferredSourceHeight : 0
         visible: control.animatedSource && source.toString() === control.source.toString()
                  && status === AnimatedImage.Ready
-        onStatusChanged: if (status === AnimatedImage.Error) control.scheduleRetry(source.toString(), control.sourceGeneration)
+        onStatusChanged: control.handleStatus(status, source.toString(), control.sourceGeneration, AnimatedImage.Ready, AnimatedImage.Error)
     }
 }

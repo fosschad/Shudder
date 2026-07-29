@@ -97,6 +97,75 @@ target_link_libraries(shudder_playback_process_tests PRIVATE
 
 add_test(NAME shudder_playback_process_tests COMMAND shudder_playback_process_tests)
 
+add_executable(shudder_mpv_video_item_tests
+  tst_mpv_video_item.cpp
+  ../src/playback/MpvVideoItem.cpp
+)
+
+target_include_directories(shudder_mpv_video_item_tests PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_link_libraries(shudder_mpv_video_item_tests PRIVATE
+  Qt6::Core
+  Qt6::Gui
+  Qt6::Quick
+  Qt6::Test
+  PkgConfig::MPV
+  shudder_sanitizers
+)
+
+if(SHUDDER_ENABLE_SANITIZERS)
+  add_test(NAME shudder_mpv_video_item_tests
+    COMMAND xvfb-run -a "${CMAKE_COMMAND}" -E env
+      DBUS_SESSION_BUS_ADDRESS=
+      LIBGL_ALWAYS_SOFTWARE=1
+      MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+      NO_AT_BRIDGE=1
+      QT_QPA_PLATFORM=xcb
+      QSG_RHI_BACKEND=opengl
+      SHUDDER_MPV_HWDEC=no
+      $<TARGET_FILE:shudder_mpv_video_item_tests>
+  )
+else()
+  add_test(NAME shudder_mpv_video_item_tests
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/run-in-headless-weston.sh" $<TARGET_FILE:shudder_mpv_video_item_tests>
+  )
+endif()
+
+add_executable(shudder_standard_player_tests
+  tst_standard_player.cpp
+)
+
+target_link_libraries(shudder_standard_player_tests PRIVATE
+  Qt6::Core
+  Qt6::Gui
+  Qt6::Qml
+  Qt6::Quick
+  Qt6::Test
+  Qt6::WebEngineQuick
+)
+
+if(SHUDDER_ENABLE_SANITIZERS)
+  add_test(NAME shudder_standard_player_tests
+    COMMAND xvfb-run -a "${CMAKE_COMMAND}" -E env
+      DBUS_SESSION_BUS_ADDRESS=
+      LIBGL_ALWAYS_SOFTWARE=1
+      MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+      NO_AT_BRIDGE=1
+      QT_QPA_PLATFORM=xcb
+      QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu
+      QSG_RHI_BACKEND=opengl
+      $<TARGET_FILE:shudder_standard_player_tests>
+  )
+else()
+  add_test(NAME shudder_standard_player_tests
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/run-in-headless-weston.sh" "${CMAKE_COMMAND}" -E env
+      QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu
+      $<TARGET_FILE:shudder_standard_player_tests>
+  )
+endif()
+
 add_executable(shudder_directory_model_tests
   tst_directory_model.cpp
   ../src/twitch/TwitchDirectoryModel.cpp

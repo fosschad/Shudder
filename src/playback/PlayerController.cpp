@@ -1,9 +1,14 @@
 #include "playback/PlayerController.h"
 
 #include <QSet>
+#include <QLoggingCategory>
 #include <QRegularExpression>
 #include <QTimer>
 #include <QtGlobal>
+
+namespace {
+Q_LOGGING_CATEGORY(lcPlaybackLifecycle, "shudder.playback.lifecycle", QtWarningMsg)
+}
 
 PlayerController::PlayerController(PlayerHostServer *host, QObject *parent) : QObject(parent), m_host(host)
 {
@@ -11,6 +16,7 @@ PlayerController::PlayerController(PlayerHostServer *host, QObject *parent) : QO
   connect(&m_liveDurationTimer, &QTimer::timeout, this, &PlayerController::updateLiveDuration);
   connect(&m_streamlink, &StreamlinkResolver::resolved, this, [this](const QString &channel, const QString &url) {
     if (channel != m_channel) return;
+    qCDebug(lcPlaybackLifecycle) << "native source resolved for channel" << channel;
     m_nativeSource = url;
     emit nativeSourceChanged();
     setStatus(tr("Native stream ready."));
@@ -53,6 +59,7 @@ void PlayerController::setMode(const QString &mode)
 {
   const QString normalized = mode == QLatin1String("native") ? QStringLiteral("native") : QStringLiteral("standard");
   if (m_mode == normalized) return;
+  qCDebug(lcPlaybackLifecycle) << "changing player mode from" << m_mode << "to" << normalized << "active" << !m_channel.isEmpty();
   if (!m_channel.isEmpty()) {
     if (normalized == QLatin1String("native") && !m_standardUrl.isEmpty()) {
       m_standardUrl = QUrl();
@@ -157,6 +164,7 @@ void PlayerController::playChannel(const QVariantMap &item)
   if (login.isEmpty()) return;
   QString newBroadcasterId = item.value(QStringLiteral("broadcasterId")).toString();
   if (newBroadcasterId.isEmpty()) newBroadcasterId = item.value(QStringLiteral("itemId")).toString();
+  qCDebug(lcPlaybackLifecycle) << "opening channel" << login << "broadcaster" << newBroadcasterId << "mode" << m_mode;
   const QString newTitle = item.value(QStringLiteral("title")).toString();
   const QString newCategory = item.value(QStringLiteral("category")).toString();
   const QString newCategoryId = item.value(QStringLiteral("categoryId")).toString();
@@ -193,7 +201,7 @@ void PlayerController::playChannel(const QVariantMap &item)
   emit standardUrlChanged();
   m_nativeSource.clear();
   emit nativeSourceChanged();
-  emit chatChannelRequested(login);
+  emit chatChannelRequested(login, newBroadcasterId);
   setStatus(tr("Opening %1...").arg(login));
   if (!m_qualityOptions.isEmpty()) {
     m_qualityOptions.clear();
@@ -245,6 +253,7 @@ void PlayerController::updateFromItem(const QVariantMap &item)
 
 void PlayerController::stop()
 {
+  qCDebug(lcPlaybackLifecycle) << "stopping player for channel" << m_channel << "mode" << m_mode;
   const int generation = ++m_stopGeneration;
   m_waitingForQualities = false;
   m_streamlink.cancel();

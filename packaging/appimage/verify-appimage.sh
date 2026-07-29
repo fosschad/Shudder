@@ -36,6 +36,7 @@ test -x "$root/usr/libexec/QtWebEngineProcess"
 test -s "$root/usr/resources/qtwebengine_resources.pak"
 compgen -G "$root/usr/lib/libQt6Core.so.6*" >/dev/null
 compgen -G "$root/usr/plugins/platforms/libqwayland*.so" >/dev/null
+test -s "$root/usr/plugins/imageformats/libqwebp.so"
 
 shopt -s nullglob globstar
 runtime_elfs=(

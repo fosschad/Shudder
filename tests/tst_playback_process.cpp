@@ -55,6 +55,7 @@ private slots:
   void qualityTimeoutIsTerminal();
   void controllerDoesNotStickWaitingForQualities();
   void automaticQualityDoesNotLeakAcrossChannels();
+  void controllerForwardsKnownBroadcasterIdToChat();
 
 private:
   static QString writeScript(const QTemporaryDir &directory, const QByteArray &body)
@@ -353,6 +354,31 @@ void PlaybackProcessTests::automaticQualityDoesNotLeakAcrossChannels()
   QCOMPARE(controller.effectiveQualityForResolve(), QStringLiteral("best"));
   controller.m_qualityOptions = {QStringLiteral("720p60"), QStringLiteral("480p")};
   QCOMPARE(controller.effectiveQualityForResolve(), QStringLiteral("720p60"));
+}
+
+void PlaybackProcessTests::controllerForwardsKnownBroadcasterIdToChat()
+{
+  QTemporaryDir directory;
+  QVERIFY(directory.isValid());
+  const QString script = writeScript(directory, QByteArrayLiteral("printf '{\"streams\":{}}\\n'\n"));
+  QVERIFY(!script.isEmpty());
+  ScopedEnvironment environment;
+  environment.set("SHUDDER_STREAMLINK_PATH", script.toUtf8());
+
+  PlayerHostServer host;
+  PlayerController controller(&host);
+  QSignalSpy chatRequest(&controller, &PlayerController::chatChannelRequested);
+  controller.playChannel({{QStringLiteral("login"), QStringLiteral("alpha")},
+                          {QStringLiteral("broadcasterId"), QStringLiteral("12345")}});
+  QCOMPARE(chatRequest.count(), 1);
+  QCOMPARE(chatRequest.first().at(0).toString(), QStringLiteral("alpha"));
+  QCOMPARE(chatRequest.first().at(1).toString(), QStringLiteral("12345"));
+  QSignalSpy broadcasterChanged(&controller, &PlayerController::broadcasterIdChanged);
+  controller.updateFromItem({{QStringLiteral("login"), QStringLiteral("alpha")},
+                             {QStringLiteral("broadcasterId"), QStringLiteral("67890")}});
+  QCOMPARE(broadcasterChanged.count(), 1);
+  QCOMPARE(controller.broadcasterId(), QStringLiteral("67890"));
+  controller.stop();
 }
 
 QTEST_MAIN(PlaybackProcessTests)

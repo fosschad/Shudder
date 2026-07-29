@@ -11,7 +11,11 @@ AppController::AppController(TwitchDirectoryModel *directory, PlayerController *
     : QObject(parent), m_directory(directory), m_player(player), m_chat(chat), m_preferences(preferences)
 {
   if (m_player && m_chat) {
-    connect(m_player, &PlayerController::chatChannelRequested, m_chat, &ChatModel::join);
+    connect(m_player, &PlayerController::chatChannelRequested, m_chat,
+            qOverload<const QString &, const QString &>(&ChatModel::join));
+    connect(m_player, &PlayerController::broadcasterIdChanged, m_chat, [player = m_player, chat = m_chat]() {
+      chat->updateChannelIdentity(player->channel(), player->broadcasterId());
+    });
   }
 }
 

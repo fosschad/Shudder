@@ -6,6 +6,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
+#include <QLoggingCategory>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
@@ -15,14 +17,28 @@
 #include <algorithm>
 
 namespace {
+Q_LOGGING_CATEGORY(lcSevenTv, "shudder.chat.7tv", QtWarningMsg)
+
 QString normalizedSevenTvHostUrl(QString baseUrl)
 {
   baseUrl = baseUrl.trimmed();
   if (baseUrl.isEmpty()) return {};
   if (baseUrl.startsWith(QStringLiteral("//"))) baseUrl.prepend(QStringLiteral("https:"));
-  else if (!baseUrl.startsWith(QStringLiteral("http"))) baseUrl.prepend(QStringLiteral("https://"));
+  else if (!baseUrl.contains(QStringLiteral("://"))) baseUrl.prepend(QStringLiteral("https://"));
+  QUrl url(baseUrl);
+  if (!url.isValid() || url.scheme() != QLatin1String("https") || url.host().isEmpty()) return {};
+  url.setQuery({});
+  url.setFragment({});
+  baseUrl = url.toString(QUrl::FullyEncoded);
   while (baseUrl.endsWith(QLatin1Char('/'))) baseUrl.chop(1);
   return baseUrl;
+}
+
+QString diagnosticUrl(QUrl url)
+{
+  url.setQuery({});
+  url.setFragment({});
+  return url.toString(QUrl::FullyEncoded);
 }
 
 bool isEmoteEdgePunctuation(QChar value)
@@ -232,28 +248,79 @@ void ChatModel::setSender(const QString &userId, const QString &login, const QSt
 void ChatModel::join(const QString &channelLogin)
 {
   const QString login = channelLogin.trimmed().toLower();
+  join(login, login == m_channel ? m_broadcasterId : QString());
+}
+
+void ChatModel::join(const QString &channelLogin, const QString &broadcasterId)
+{
+  const QString login = channelLogin.trimmed().toLower();
   if (login.isEmpty()) return;
+  const QString normalizedBroadcasterId = broadcasterId.trimmed();
   m_shouldReconnect = true;
   m_reconnectTimer.stop();
   if (m_channel != login) {
     ++m_requestGeneration;
+    ++m_sevenTvChannelRequestId;
+    if (m_sevenTvChannelReply) m_sevenTvChannelReply->abort();
     clear();
     m_channel = login;
-    m_broadcasterId.clear();
+    m_broadcasterId = normalizedBroadcasterId;
     const bool hadChannelBadges = !m_channelBadgeAssets.isEmpty();
     m_channelBadgeAssets.clear();
     m_channelEmotes.clear();
     m_sevenTvChannelEmotes.clear();
     m_ffzChannelEmotes.clear();
     m_bttvChannelEmotes.clear();
+    m_sevenTvChannelSetId.clear();
+    m_sevenTvChannelBroadcasterId.clear();
+    m_sevenTvChannelLoaded = false;
     if (hadChannelBadges) notifyBadgeAssetsChanged();
     emit emotePickerEmotesChanged();
     emit channelChanged();
+  } else if (!normalizedBroadcasterId.isEmpty() && normalizedBroadcasterId != m_broadcasterId) {
+    ++m_requestGeneration;
+    ++m_sevenTvChannelRequestId;
+    if (m_sevenTvChannelReply) m_sevenTvChannelReply->abort();
+    m_broadcasterId = normalizedBroadcasterId;
+    m_channelBadgeAssets.clear();
+    m_channelEmotes.clear();
+    m_sevenTvChannelEmotes.clear();
+    m_ffzChannelEmotes.clear();
+    m_bttvChannelEmotes.clear();
+    m_sevenTvChannelSetId.clear();
+    m_sevenTvChannelBroadcasterId.clear();
+    m_sevenTvChannelLoaded = false;
+    notifyBadgeAssetsChanged();
+    emit emotePickerEmotesChanged();
+    notifyMessagePartsChanged();
   }
   m_socket.abort();
   setStatus(tr("Connecting to #%1 chat...").arg(login));
   requestBadgeAssets();
   m_socket.open(QUrl(QStringLiteral("wss://irc-ws.chat.twitch.tv:443")));
+}
+
+void ChatModel::updateChannelIdentity(const QString &channelLogin, const QString &broadcasterId)
+{
+  const QString login = channelLogin.trimmed().toLower();
+  const QString normalizedBroadcasterId = broadcasterId.trimmed();
+  if (login.isEmpty() || login != m_channel || normalizedBroadcasterId.isEmpty() || normalizedBroadcasterId == m_broadcasterId) return;
+  ++m_requestGeneration;
+  ++m_sevenTvChannelRequestId;
+  if (m_sevenTvChannelReply) m_sevenTvChannelReply->abort();
+  m_broadcasterId = normalizedBroadcasterId;
+  m_channelBadgeAssets.clear();
+  m_channelEmotes.clear();
+  m_sevenTvChannelEmotes.clear();
+  m_ffzChannelEmotes.clear();
+  m_bttvChannelEmotes.clear();
+  m_sevenTvChannelSetId.clear();
+  m_sevenTvChannelBroadcasterId.clear();
+  m_sevenTvChannelLoaded = false;
+  notifyBadgeAssetsChanged();
+  emit emotePickerEmotesChanged();
+  notifyMessagePartsChanged();
+  requestBadgeAssets();
 }
 
 void ChatModel::disconnectChat()
@@ -267,6 +334,12 @@ void ChatModel::disconnectChat()
 void ChatModel::refreshEmotePicker()
 {
   requestEmoteAssets();
+}
+
+void ChatModel::reportEmoteImageStatus(const QString &provider, const QString &emoteId, const QString &imageUrl, const QString &status) const
+{
+  if (provider != QLatin1String("7TV")) return;
+  qCDebug(lcSevenTv).noquote() << "image" << status << "emote" << emoteId << "url" << imageUrl << "cache-key" << imageUrl;
 }
 
 bool ChatModel::sendMessage(const QString &body)
@@ -470,15 +543,27 @@ void ChatModel::requestReconnect()
 
 void ChatModel::requestBadgeAssets()
 {
-  if (m_clientId.isEmpty() || m_accessToken.isEmpty() || m_channel.isEmpty()) return;
+  if (m_channel.isEmpty()) return;
   const QString channelSnapshot = m_channel;
   const quint64 generation = m_requestGeneration;
+  if (!m_sevenTvGlobalLoaded) requestSevenTvGlobalEmotes();
+  if (!m_broadcasterId.isEmpty()) requestSevenTvChannelEmotes(m_broadcasterId, channelSnapshot);
+
+  if (m_clientId.isEmpty() || m_accessToken.isEmpty()) return;
+  if (m_ffzGlobalEmotes.isEmpty()) requestFfzGlobalEmotes(channelSnapshot, generation);
+  if (m_bttvGlobalEmotes.isEmpty()) requestBttvGlobalEmotes(channelSnapshot, generation);
   const quint64 badgeGeneration = ++m_badgeRequestGeneration;
   requestBadges(QStringLiteral("/chat/badges/global"), channelSnapshot, generation, badgeGeneration, false);
   if (m_globalEmotes.isEmpty()) requestEmotes(QStringLiteral("/chat/emotes/global"), tr("Global"), channelSnapshot, generation, false);
-  if (m_sevenTvGlobalEmotes.isEmpty()) requestSevenTvGlobalEmotes(channelSnapshot, generation);
-  if (m_ffzGlobalEmotes.isEmpty()) requestFfzGlobalEmotes(channelSnapshot, generation);
-  if (m_bttvGlobalEmotes.isEmpty()) requestBttvGlobalEmotes(channelSnapshot, generation);
+
+  if (!m_broadcasterId.isEmpty()) {
+    const QString encodedId = QString::fromLatin1(QUrl::toPercentEncoding(m_broadcasterId));
+    requestBadges(QStringLiteral("/chat/badges?broadcaster_id=%1").arg(encodedId), channelSnapshot, generation, badgeGeneration, true);
+    requestEmotes(QStringLiteral("/chat/emotes?broadcaster_id=%1").arg(encodedId), tr("Channel"), channelSnapshot, generation, true);
+    requestFfzChannelEmotes(m_broadcasterId, channelSnapshot, generation);
+    requestBttvChannelEmotes(m_broadcasterId, channelSnapshot, generation);
+    return;
+  }
 
   QNetworkRequest request = authenticatedTwitchRequest(QStringLiteral("/users?login=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(channelSnapshot))));
   QNetworkReply *reply = m_network.get(request);
@@ -492,7 +577,7 @@ void ChatModel::requestBadgeAssets()
         m_broadcasterId = broadcasterId;
         requestBadges(QStringLiteral("/chat/badges?broadcaster_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))), channelSnapshot, generation, badgeGeneration, true);
         requestEmotes(QStringLiteral("/chat/emotes?broadcaster_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))), tr("Channel"), channelSnapshot, generation, true);
-        requestSevenTvChannelEmotes(broadcasterId, channelSnapshot, generation);
+        requestSevenTvChannelEmotes(broadcasterId, channelSnapshot);
         requestFfzChannelEmotes(broadcasterId, channelSnapshot, generation);
         requestBttvChannelEmotes(broadcasterId, channelSnapshot, generation);
       }
@@ -514,21 +599,21 @@ void ChatModel::requestBadges(const QString &path, const QString &channelSnapsho
 
 void ChatModel::requestEmoteAssets()
 {
-  if (m_clientId.isEmpty() || m_accessToken.isEmpty()) return;
   const QString channelSnapshot = m_channel;
   const quint64 generation = m_requestGeneration;
-  requestEmotes(QStringLiteral("/chat/emotes/global"), tr("Global"), channelSnapshot, generation, false);
-  requestSevenTvGlobalEmotes(channelSnapshot, generation);
+  requestSevenTvGlobalEmotes(true);
+  if (!m_broadcasterId.isEmpty()) {
+    requestSevenTvChannelEmotes(m_broadcasterId, channelSnapshot, true);
+  }
+  if (m_clientId.isEmpty() || m_accessToken.isEmpty()) return;
   requestFfzGlobalEmotes(channelSnapshot, generation);
   requestBttvGlobalEmotes(channelSnapshot, generation);
+  requestEmotes(QStringLiteral("/chat/emotes/global"), tr("Global"), channelSnapshot, generation, false);
   if (!m_broadcasterId.isEmpty()) {
     requestEmotes(QStringLiteral("/chat/emotes?broadcaster_id=%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(m_broadcasterId))), tr("Channel"), channelSnapshot, generation, true);
-    requestSevenTvChannelEmotes(m_broadcasterId, channelSnapshot, generation);
     requestFfzChannelEmotes(m_broadcasterId, channelSnapshot, generation);
     requestBttvChannelEmotes(m_broadcasterId, channelSnapshot, generation);
-  } else if (!m_channel.isEmpty()) {
-    requestBadgeAssets();
-  }
+  } else if (!m_channel.isEmpty()) requestBadgeAssets();
 }
 
 void ChatModel::requestEmotes(const QString &path, const QString &owner, const QString &channelSnapshot, quint64 generation, bool channelScoped)
@@ -559,59 +644,160 @@ void ChatModel::requestEmotes(const QString &path, const QString &owner, const Q
   });
 }
 
-void ChatModel::requestSevenTvGlobalEmotes(const QString &channelSnapshot, quint64 generation)
+void ChatModel::requestSevenTvGlobalEmotes(bool force)
 {
-  QNetworkReply *reply = m_network.get(providerRequest(QUrl(QStringLiteral("https://7tv.io/v3/emote-sets/global"))));
+  if ((!force && m_sevenTvGlobalLoaded) || m_sevenTvGlobalReply) return;
+  const QUrl url = m_sevenTvApiBaseUrl.resolved(QUrl(QStringLiteral("emote-sets/global")));
+  const quint64 requestId = ++m_sevenTvGlobalRequestId;
+  QNetworkReply *reply = m_network.get(providerRequest(url));
+  m_sevenTvGlobalReply = reply;
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation]() {
-    if (generation == m_requestGeneration && (channelSnapshot.isEmpty() || channelSnapshot == m_channel) && reply->error() == QNetworkReply::NoError) {
-      const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
-      QVector<EmoteAsset> parsed;
-      for (const QJsonValue &value : object.value(QStringLiteral("emotes")).toArray()) {
-        const QJsonObject item = value.toObject();
-        const QJsonObject data = item.value(QStringLiteral("data")).toObject();
-        EmoteAsset emote;
-        emote.id = item.value(QStringLiteral("id")).toString();
-        emote.name = item.value(QStringLiteral("name")).toString();
-        emote.imageUrl = sevenTvImageUrl(data);
-        emote.provider = QStringLiteral("7TV");
-        emote.owner = tr("Global");
-        if (!emote.name.isEmpty() && !emote.imageUrl.isEmpty()) parsed.push_back(std::move(emote));
-      }
-      m_sevenTvGlobalEmotes = std::move(parsed);
-      emit emotePickerEmotesChanged();
-      notifyMessagePartsChanged();
+  qCDebug(lcSevenTv).noquote() << "request" << requestId << "global url" << diagnosticUrl(url);
+  connect(reply, &QNetworkReply::finished, this, [this, reply, requestId]() {
+    if (m_sevenTvGlobalReply == reply) m_sevenTvGlobalReply.clear();
+    const QByteArray payload = reply->readAll();
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    qCDebug(lcSevenTv).noquote() << "response" << requestId << "global status" << status << "url" << diagnosticUrl(reply->url())
+                                    << "network-error" << (reply->error() == QNetworkReply::NoError ? QStringLiteral("none") : reply->errorString());
+    if (reply->error() == QNetworkReply::NoError && status >= 200 && status < 300) {
+      applySevenTvPayload(payload, false, {}, {}, requestId);
+    } else {
+      qCWarning(lcSevenTv) << "global request failed with status" << status << "network error" << int(reply->error());
     }
     reply->deleteLater();
   });
 }
 
-void ChatModel::requestSevenTvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, quint64 generation)
+void ChatModel::requestSevenTvChannelEmotes(const QString &broadcasterId, const QString &channelSnapshot, bool force)
 {
-  QNetworkReply *reply = m_network.get(providerRequest(QUrl(QStringLiteral("https://7tv.io/v3/users/twitch/%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId))))));
+  if (broadcasterId.isEmpty()) return;
+  if (!force && m_sevenTvChannelLoaded && m_sevenTvChannelBroadcasterId == broadcasterId) return;
+  if (m_sevenTvChannelReply && m_sevenTvChannelBroadcasterId == broadcasterId) return;
+  if (m_sevenTvChannelReply) m_sevenTvChannelReply->abort();
+  m_sevenTvChannelBroadcasterId = broadcasterId;
+  const QUrl url = m_sevenTvApiBaseUrl.resolved(QUrl(QStringLiteral("users/twitch/%1").arg(QString::fromLatin1(QUrl::toPercentEncoding(broadcasterId)))));
+  const quint64 requestId = ++m_sevenTvChannelRequestId;
+  QNetworkReply *reply = m_network.get(providerRequest(url));
+  m_sevenTvChannelReply = reply;
   reply->setParent(this);
-  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, generation]() {
-    if (generation == m_requestGeneration && channelSnapshot == m_channel && reply->error() == QNetworkReply::NoError) {
-      const QJsonObject object = QJsonDocument::fromJson(reply->readAll()).object();
-      const QJsonObject set = object.value(QStringLiteral("emote_set")).toObject();
-      QVector<EmoteAsset> parsed;
-      for (const QJsonValue &value : set.value(QStringLiteral("emotes")).toArray()) {
-        const QJsonObject item = value.toObject();
-        const QJsonObject data = item.value(QStringLiteral("data")).toObject();
-        EmoteAsset emote;
-        emote.id = item.value(QStringLiteral("id")).toString();
-        emote.name = item.value(QStringLiteral("name")).toString();
-        emote.imageUrl = sevenTvImageUrl(data);
-        emote.provider = QStringLiteral("7TV");
-        emote.owner = tr("Channel");
-        if (!emote.name.isEmpty() && !emote.imageUrl.isEmpty()) parsed.push_back(std::move(emote));
-      }
-      m_sevenTvChannelEmotes = std::move(parsed);
-      emit emotePickerEmotesChanged();
-      notifyMessagePartsChanged();
+  qCDebug(lcSevenTv).noquote() << "request" << requestId << "channel" << channelSnapshot << "user" << broadcasterId << "url" << diagnosticUrl(url);
+  connect(reply, &QNetworkReply::finished, this, [this, reply, channelSnapshot, broadcasterId, requestId]() {
+    if (m_sevenTvChannelReply == reply) m_sevenTvChannelReply.clear();
+    const QByteArray payload = reply->readAll();
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    qCDebug(lcSevenTv).noquote() << "response" << requestId << "channel" << channelSnapshot << "user" << broadcasterId
+                                    << "status" << status << "url" << diagnosticUrl(reply->url()) << "network-error"
+                                    << (reply->error() == QNetworkReply::NoError ? QStringLiteral("none") : reply->errorString());
+    if (reply->error() == QNetworkReply::ContentNotFoundError && status == 404) {
+      applySevenTvChannelNotFound(channelSnapshot, broadcasterId, requestId);
+    } else if (reply->error() == QNetworkReply::NoError && status >= 200 && status < 300) {
+      applySevenTvPayload(payload, true, channelSnapshot, broadcasterId, requestId);
+    } else {
+      qCWarning(lcSevenTv) << "channel request failed with status" << status << "network error" << int(reply->error());
     }
     reply->deleteLater();
   });
+}
+
+std::optional<ChatModel::SevenTvSet> ChatModel::parseSevenTvPayload(const QByteArray &payload, bool channelScoped, QString *errorMessage)
+{
+  QJsonParseError parseError;
+  const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+  if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+    if (errorMessage) *errorMessage = parseError.error != QJsonParseError::NoError ? parseError.errorString() : QStringLiteral("root is not an object");
+    return std::nullopt;
+  }
+  const QJsonObject root = document.object();
+  const QJsonValue setValue = channelScoped ? root.value(QStringLiteral("emote_set")) : QJsonValue(root);
+  if (!setValue.isObject()) {
+    if (errorMessage) *errorMessage = QStringLiteral("emote set is missing");
+    return std::nullopt;
+  }
+  const QJsonObject set = setValue.toObject();
+  if (set.value(QStringLiteral("id")).toString().isEmpty()) {
+    if (errorMessage) *errorMessage = QStringLiteral("emote set id is missing");
+    return std::nullopt;
+  }
+  if (!set.value(QStringLiteral("emotes")).isArray()) {
+    if (errorMessage) *errorMessage = QStringLiteral("emotes is not an array");
+    return std::nullopt;
+  }
+
+  SevenTvSet result;
+  result.id = set.value(QStringLiteral("id")).toString();
+  const QString owner = channelScoped ? tr("Channel") : tr("Global");
+  const QJsonArray emotes = set.value(QStringLiteral("emotes")).toArray();
+  for (const QJsonValue &value : emotes) {
+    if (!value.isObject()) continue;
+    const QJsonObject item = value.toObject();
+    EmoteAsset emote;
+    emote.id = item.value(QStringLiteral("id")).toString();
+    emote.name = item.value(QStringLiteral("name")).toString();
+    emote.imageUrl = sevenTvImageUrl(item.value(QStringLiteral("data")).toObject());
+    emote.provider = QStringLiteral("7TV");
+    emote.owner = owner;
+    if (emote.id.isEmpty() || emote.name.isEmpty() || emote.imageUrl.isEmpty()) continue;
+    qCDebug(lcSevenTv).noquote() << "selected emote" << emote.id << "url" << emote.imageUrl << "cache-key" << emote.imageUrl;
+    result.emotes.push_back(std::move(emote));
+  }
+  if (!emotes.isEmpty() && result.emotes.isEmpty()) {
+    if (errorMessage) *errorMessage = QStringLiteral("emote set contains no usable assets");
+    return std::nullopt;
+  }
+  return result;
+}
+
+bool ChatModel::applySevenTvPayload(const QByteArray &payload, bool channelScoped, const QString &channelSnapshot,
+                                    const QString &broadcasterId, quint64 requestId)
+{
+  if (channelScoped) {
+    if (requestId != m_sevenTvChannelRequestId || channelSnapshot != m_channel || broadcasterId != m_broadcasterId) {
+      qCDebug(lcSevenTv) << "ignored stale channel response" << requestId << channelSnapshot << broadcasterId;
+      return false;
+    }
+  } else if (requestId != m_sevenTvGlobalRequestId) {
+    qCDebug(lcSevenTv) << "ignored stale global response" << requestId;
+    return false;
+  }
+
+  QString error;
+  std::optional<SevenTvSet> parsed = parseSevenTvPayload(payload, channelScoped, &error);
+  if (!parsed) {
+    qCWarning(lcSevenTv).noquote() << "response parse failed" << (channelScoped ? "channel" : "global") << error;
+    return false;
+  }
+  qCDebug(lcSevenTv) << "parsed" << (channelScoped ? "channel" : "global") << "set" << parsed->id << "emotes" << parsed->emotes.size();
+  if (channelScoped) {
+    if (m_sevenTvChannelLoaded && m_sevenTvChannelSetId == parsed->id && m_sevenTvChannelEmotes == parsed->emotes) return true;
+    m_sevenTvChannelSetId = parsed->id;
+    m_sevenTvChannelBroadcasterId = broadcasterId;
+    m_sevenTvChannelEmotes = std::move(parsed->emotes);
+    m_sevenTvChannelLoaded = true;
+  } else {
+    if (m_sevenTvGlobalLoaded && m_sevenTvGlobalSetId == parsed->id && m_sevenTvGlobalEmotes == parsed->emotes) return true;
+    m_sevenTvGlobalSetId = parsed->id;
+    m_sevenTvGlobalEmotes = std::move(parsed->emotes);
+    m_sevenTvGlobalLoaded = true;
+  }
+  emit emotePickerEmotesChanged();
+  notifyMessagePartsChanged();
+  return true;
+}
+
+bool ChatModel::applySevenTvChannelNotFound(const QString &channelSnapshot, const QString &broadcasterId, quint64 requestId)
+{
+  if (requestId != m_sevenTvChannelRequestId || channelSnapshot != m_channel || broadcasterId != m_broadcasterId) return false;
+  const bool changed = !m_sevenTvChannelEmotes.isEmpty();
+  m_sevenTvChannelEmotes.clear();
+  m_sevenTvChannelSetId.clear();
+  m_sevenTvChannelBroadcasterId = broadcasterId;
+  m_sevenTvChannelLoaded = true;
+  if (changed) {
+    emit emotePickerEmotesChanged();
+    notifyMessagePartsChanged();
+  }
+  qCDebug(lcSevenTv) << "channel has no 7TV emote set" << channelSnapshot << broadcasterId;
+  return true;
 }
 
 QString ChatModel::sevenTvImageUrl(const QJsonObject &data)
@@ -991,6 +1177,7 @@ QNetworkRequest ChatModel::providerRequest(const QUrl &url) const
   QNetworkRequest request(url);
   request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Shudder/%1").arg(QString::fromLatin1(SHUDDER_VERSION)));
   request.setTransferTimeout(15000);
+  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
   return request;
 }
 
