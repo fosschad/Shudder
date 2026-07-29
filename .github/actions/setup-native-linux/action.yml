@@ -41,7 +41,7 @@ runs:
         host: linux
         target: desktop
         arch: linux_gcc_64
-        modules: 'qtwebengine qtwebsockets qtwebchannel qtpositioning'
+        modules: 'qtimageformats qtwebengine qtwebsockets qtwebchannel qtpositioning'
         cache: true
 
     - name: Verify Qt installation
