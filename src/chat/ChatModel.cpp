@@ -27,8 +27,8 @@ QString normalizedSevenTvHostUrl(QString baseUrl)
   else if (!baseUrl.contains(QStringLiteral("://"))) baseUrl.prepend(QStringLiteral("https://"));
   QUrl url(baseUrl);
   if (!url.isValid() || url.scheme() != QLatin1String("https") || url.host().isEmpty()) return {};
-  url.setQuery({});
-  url.setFragment({});
+  url.setQuery(QString());
+  url.setFragment(QString());
   baseUrl = url.toString(QUrl::FullyEncoded);
   while (baseUrl.endsWith(QLatin1Char('/'))) baseUrl.chop(1);
   return baseUrl;
@@ -36,8 +36,8 @@ QString normalizedSevenTvHostUrl(QString baseUrl)
 
 QString diagnosticUrl(QUrl url)
 {
-  url.setQuery({});
-  url.setFragment({});
+  url.setQuery(QString());
+  url.setFragment(QString());
   return url.toString(QUrl::FullyEncoded);
 }
 
