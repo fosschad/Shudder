@@ -2,6 +2,19 @@
 
 All notable changes to Shudder will be documented in this file.
 
+## [0.1.4] - 2026-07-29
+
+### Fixed
+
+- Restored global and channel 7TV emotes when Twitch credentials are unavailable, and kept channel identity updates and delayed responses from crossing streams.
+- Added the Qt WebP image-format dependency to native packages and verified it in AppImage and CI builds.
+- Stabilized native libmpv playback during continuous resizing, maximize and fullscreen transitions, source replacement, render-context recreation, and active teardown.
+
+### Changed
+
+- Replaced fixed native-player redraw polling with coalesced mpv update callbacks and asynchronous source commands.
+- Expanded 7TV parsing, caching, image lifecycle, and native and Standard playback lifecycle regression coverage.
+
 ## [0.1.3] - 2026-07-25
 
 ### Fixed
